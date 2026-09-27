@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	bash "github.com/adrianliechti/go-bash"
 	pyodide "github.com/adrianliechti/go-pyodide"
-	shale "github.com/adrianliechti/shale"
 )
 
 func TestPythonCommand(t *testing.T) {
@@ -18,9 +18,9 @@ func TestPythonCommand(t *testing.T) {
 	}
 	defer rt.Close(context.Background())
 	python := pythonCommand(rt)
-	sh, err := shale.New(t.Context(), shale.Options{
+	sh, err := bash.New(t.Context(), bash.Options{
 		Timeout:  30 * time.Second,
-		Commands: map[string]shale.CommandFunc{"python": python, "python3": python},
+		Commands: map[string]bash.CommandFunc{"python": python, "python3": python},
 	})
 	if err != nil {
 		t.Fatal(err)

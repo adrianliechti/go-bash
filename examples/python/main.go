@@ -1,4 +1,4 @@
-// This example registers embedded CPython as a virtual Shale command.
+// This example registers embedded CPython as a virtual go-bash command.
 package main
 
 import (
@@ -10,8 +10,8 @@ import (
 	"os/signal"
 	"time"
 
+	bash "github.com/adrianliechti/go-bash"
 	pyodide "github.com/adrianliechti/go-pyodide"
-	shale "github.com/adrianliechti/shale"
 )
 
 const demo = `
@@ -38,9 +38,9 @@ func run(script string) int {
 	}
 	defer rt.Close(context.Background())
 	python := pythonCommand(rt)
-	sh, err := shale.New(ctx, shale.Options{
+	sh, err := bash.New(ctx, bash.Options{
 		Timeout: 30 * time.Second,
-		Commands: map[string]shale.CommandFunc{
+		Commands: map[string]bash.CommandFunc{
 			"python": python, "python3": python,
 		},
 	})
@@ -60,8 +60,8 @@ func run(script string) int {
 	return result.ExitCode
 }
 
-func pythonCommand(rt *pyodide.Runtime) shale.CommandFunc {
-	return func(ctx context.Context, cmd *shale.Command) (int, error) {
+func pythonCommand(rt *pyodide.Runtime) bash.CommandFunc {
+	return func(ctx context.Context, cmd *bash.Command) (int, error) {
 		err := rt.Run(ctx, bootstrap, pyodide.RunOptions{
 			Args:   append([]string{cmd.Cwd}, cmd.Args[1:]...),
 			Env:    cmd.Env,
@@ -69,7 +69,7 @@ func pythonCommand(rt *pyodide.Runtime) shale.CommandFunc {
 			Stdout: cmd.Stdout,
 			Stderr: cmd.Stderr,
 			// Pyodide's FS mounts are read-only. Shell redirection can still
-			// write Python's output to any writable Shale mount.
+			// write Python's output to any writable go-bash mount.
 			Mounts: []pyodide.Mount{{Path: "/", FS: cmd.FS}},
 		})
 		var exit *pyodide.ExitError
@@ -84,7 +84,7 @@ func pythonCommand(rt *pyodide.Runtime) shale.CommandFunc {
 }
 
 // go-pyodide does not expose a per-run cwd option. This small launcher changes
-// to Shale's virtual cwd before running -c, -m, a script file, or stdin.
+// to go-bash's virtual cwd before running -c, -m, a script file, or stdin.
 // It implements these common modes, not the full CPython option parser.
 const bootstrap = `
 import os

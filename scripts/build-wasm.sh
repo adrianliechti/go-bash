@@ -27,11 +27,11 @@ export CARGO_PROFILE_RELEASE_STRIP=symbols
 export CC_wasm32_wasip1="$WASI_SDK_PATH/bin/clang"
 export AR_wasm32_wasip1="$WASI_SDK_PATH/bin/llvm-ar"
 
-# The constructor object seeds each command's working directory from SHALE_CWD.
-# See scripts/wasi/shale_cwd.c. coreutils predates it and still uses a patch.
-ctor="$repo_dir/.cache/shale_cwd.o"
+# The constructor object seeds each command's working directory from BASH_CWD.
+# See scripts/wasi/bash_cwd.c. coreutils predates it and still uses a patch.
+ctor="$repo_dir/.cache/bash_cwd.o"
 "$WASI_SDK_PATH/bin/clang" --target=wasm32-wasip1 --sysroot="$WASI_SDK_PATH/share/wasi-sysroot" \
-  -O2 -c "$repo_dir/scripts/wasi/shale_cwd.c" -o "$ctor"
+  -O2 -c "$repo_dir/scripts/wasi/bash_cwd.c" -o "$ctor"
 
 build() {
   project=$1
@@ -41,7 +41,7 @@ build() {
   patches='' features='' cwd=ctor upstream="uutils/$project"
   case $project in
     coreutils)
-      tag=0.11.0 sha=a47966117783bef18650cc724f1b1d061b717ac91a0feaabdd34910703cf70a4
+      tag=0.12.0 sha=4fb327655cb4ffcbf2f16550cf9234079ffe839692f7aa1a6eda104af684e122
       patches=coreutils-cwd.patch bin=coreutils artifact=coreutils license=LICENSE dest=LICENSE
       features='--no-default-features --features feat_wasm' cwd=patch ;;
     grep)

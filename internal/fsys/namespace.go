@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/adrianliechti/shale/vfs"
+	"github.com/adrianliechti/go-bash/vfs"
 )
 
 type Mount struct {

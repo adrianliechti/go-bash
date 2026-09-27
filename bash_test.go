@@ -1,4 +1,4 @@
-package shale_test
+package bash_test
 
 import (
 	"context"
@@ -12,15 +12,15 @@ import (
 	"testing/fstest"
 	"time"
 
-	shale "github.com/adrianliechti/shale"
-	"github.com/adrianliechti/shale/vfs"
+	bash "github.com/adrianliechti/go-bash"
+	"github.com/adrianliechti/go-bash/vfs"
 )
 
 func TestShellIntegration(t *testing.T) {
 	ctx := context.Background()
 	source := fstest.MapFS{"names.txt": {Data: []byte("pear\napple\npear\n")}}
 	work := vfs.NewMemory(1 << 20)
-	b, err := shale.New(ctx, shale.Options{Mounts: []shale.Mount{{Path: "/data", FS: source}, {Path: "/workspace", FS: work}}, Cwd: "/workspace"})
+	b, err := bash.New(ctx, bash.Options{Mounts: []bash.Mount{{Path: "/data", FS: source}, {Path: "/workspace", FS: work}}, Cwd: "/workspace"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestShellIntegration(t *testing.T) {
 		code               int
 	}{
 		{"version", "coreutils --version", "", 0},
-		{"shell name", "printf '%s\\n' \"$0\"", "shale\n", 0},
+		{"shell name", "printf '%s\\n' \"$0\"", "go-bash\n", 0},
 		{"read mount", "cat /data/names.txt", "pear\napple\npear\n", 0},
 		{"pipeline redirect", "cat /data/names.txt | sort | uniq > sorted.txt; cat sorted.txt", "apple\npear\n", 0},
 		{"append", "echo plum >> sorted.txt; cat sorted.txt", "apple\npear\nplum\n", 0},
@@ -57,12 +57,12 @@ func TestShellIntegration(t *testing.T) {
 		{"quoted heredoc", "cat <<'EOF'\n$x\nEOF", "$x\n", 0},
 		{"pipe early close", "yes | head -n 1", "y\n", 0},
 		{"fd redirect", "cat missing 2>/dev/null || echo failed", "failed\n", 0},
-		{"virtual cwd cannot spoof", "SHALE_CWD=/data /bin/cat sub/f", "yes\n", 0},
+		{"virtual cwd cannot spoof", "BASH_CWD=/data /bin/cat sub/f", "yes\n", 0},
 		{"grep", "grep -n pear /data/names.txt", "1:pear\n3:pear\n", 0},
 		{"grep no match", "grep zzz sorted.txt", "", 1},
 		{"grep recursive relative cwd", "grep -rl yes sub", "sub/f\n", 0},
 		{"grep absolute", "/usr/bin/grep -c . /data/names.txt", "3\n", 0},
-		{"grep virtual cwd cannot spoof", "SHALE_CWD=/data grep -c yes sub/f", "1\n", 0},
+		{"grep virtual cwd cannot spoof", "BASH_CWD=/data grep -c yes sub/f", "1\n", 0},
 		{"sed first use in pipeline", "printf 'a\nb\n' | sed s/a/A/ | sed s/b/B/", "A\nB\n", 0},
 		{"sed print", "sed -n 's/pear/PEAR/p' sorted.txt", "PEAR\n", 0},
 		{"sed in place", "cp sorted.txt edit.txt; sed -i 's/plum/prune/' edit.txt; tail -n 1 edit.txt; rm edit.txt", "prune\n", 0},
@@ -107,24 +107,28 @@ func TestShellIntegration(t *testing.T) {
 	if err != nil || r.ExitCode != 0 {
 		t.Fatalf("coreutils --list: %#v, %v", r, err)
 	}
-	all := shale.Commands()
+	all := bash.Commands()
 	for _, c := range append(strings.Fields(r.Stdout), "coreutils", "grep", "find", "diff", "cmp", "sed", "rg") {
 		if !slices.Contains(all, c) {
 			t.Fatalf("command inventory lacks %s: %q", c, all)
 		}
 	}
-	if v := shale.Versions(); v["coreutils"] != shale.CoreutilsVersion || v["grep"] == "" || v["findutils"] == "" || v["diffutils"] == "" || v["sed"] == "" || v["ripgrep"] != "15.2.0" {
+	if v := bash.Versions(); v["coreutils"] != bash.CoreutilsVersion || v["grep"] == "" || v["findutils"] == "" || v["diffutils"] == "" || v["sed"] == "" || v["ripgrep"] != "15.2.0" {
 		t.Fatalf("versions: %v", v)
 	}
-	r, err = b.Run(ctx, shale.Request{Script: "cat | tr a-z A-Z", Stdin: "hello\n"})
+	r, err = b.Exec(ctx, "coreutils --version")
+	if err != nil || r.ExitCode != 0 || !strings.HasPrefix(r.Stdout, "coreutils "+bash.CoreutilsVersion+" ") {
+		t.Fatalf("coreutils artifact version: %#v, %v", r, err)
+	}
+	r, err = b.Run(ctx, bash.Request{Script: "cat | tr a-z A-Z", Stdin: "hello\n"})
 	if err != nil || r.ExitCode != 0 || r.Stdout != "HELLO\n" {
 		t.Fatalf("stdin: %#v, %v", r, err)
 	}
 }
 
-func newShell(t *testing.T, opts shale.Options) *shale.Shell {
+func newShell(t *testing.T, opts bash.Options) *bash.Shell {
 	t.Helper()
-	b, err := shale.New(t.Context(), opts)
+	b, err := bash.New(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +148,7 @@ func TestDirectoryAndReadOnlyMounts(t *testing.T) {
 	}
 	t.Cleanup(func() { dir.Close() })
 	ro := fstest.MapFS{"secret": {Data: []byte("keep")}}
-	b := newShell(t, shale.Options{Mounts: []shale.Mount{{Path: "/workspace", FS: dir}, {Path: "/ro", FS: ro}}, Cwd: "/workspace"})
+	b := newShell(t, bash.Options{Mounts: []bash.Mount{{Path: "/workspace", FS: dir}, {Path: "/ro", FS: ro}}, Cwd: "/workspace"})
 	r, err := b.Exec(t.Context(), "mkdir d && echo original > d/a && cp d/a d/b && mv d/b d/c && rm d/a && touch d/c && cat d/c")
 	if err != nil || r.ExitCode != 0 || r.Stdout != "original\n" {
 		t.Fatalf("host mutations: %#v, %v", r, err)
@@ -200,13 +204,13 @@ func TestDirectoryAndReadOnlyMounts(t *testing.T) {
 }
 
 func TestLimitsAndIsolation(t *testing.T) {
-	t.Setenv("SHALE_HOST_SECRET", "must-not-leak")
-	b := newShell(t, shale.Options{Timeout: 300 * time.Millisecond, MaxOutputBytes: 4096, MaxSteps: 100})
+	t.Setenv("GO_BASH_HOST_SECRET", "must-not-leak")
+	b := newShell(t, bash.Options{Timeout: 300 * time.Millisecond, MaxOutputBytes: 4096, MaxSteps: 100})
 	for _, tc := range []struct {
 		script string
 		want   error
 	}{
-		{"yes", shale.ErrOutputLimit},
+		{"yes", bash.ErrOutputLimit},
 		{"sleep 3600", context.DeadlineExceeded},
 		{"sleep 3600 | cat", context.DeadlineExceeded},
 	} {
@@ -225,12 +229,12 @@ func TestLimitsAndIsolation(t *testing.T) {
 	if _, err := b.Exec(t.Context(), "while true; do :; done"); err == nil {
 		t.Fatal("step budget not enforced")
 	}
-	for _, script := range []string{"echo hi &", "cat <(echo hi)", "[[ -f /bin/cat ]]"} {
+	for _, script := range []string{"echo hi &", "cat <(echo hi)", "[[ x =~ x ]]"} {
 		if _, err := b.Exec(t.Context(), script); err == nil {
 			t.Errorf("unsupported syntax accepted: %s", script)
 		}
 	}
-	r, err := b.Exec(t.Context(), "printf '%s|%s|%s\n' \"$SHALE_HOST_SECRET\" ~ ~root")
+	r, err := b.Exec(t.Context(), "printf '%s|%s|%s\n' \"$GO_BASH_HOST_SECRET\" ~ ~root")
 	if err != nil || r.Stdout != "|/work|~root\n" {
 		t.Fatalf("host environment leak: %#v, %v", r, err)
 	}
@@ -250,14 +254,14 @@ func TestLimitsAndIsolation(t *testing.T) {
 }
 
 func TestInvalidMounts(t *testing.T) {
-	for _, mounts := range [][]shale.Mount{
+	for _, mounts := range [][]bash.Mount{
 		{{Path: "/", FS: vfs.NewMemory(1024)}},
 		{{Path: "/bin", FS: vfs.NewMemory(1024)}},
 		{{Path: "/usr", FS: vfs.NewMemory(1024)}},
 		{{Path: "relative", FS: vfs.NewMemory(1024)}},
 		{{Path: "/data"}},
 	} {
-		if b, err := shale.New(t.Context(), shale.Options{Mounts: mounts}); err == nil {
+		if b, err := bash.New(t.Context(), bash.Options{Mounts: mounts}); err == nil {
 			b.Close(t.Context())
 			t.Fatalf("invalid mounts accepted: %#v", mounts)
 		}

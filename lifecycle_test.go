@@ -1,4 +1,4 @@
-package shale_test
+package bash_test
 
 import (
 	"context"
@@ -10,15 +10,15 @@ import (
 	"testing"
 	"time"
 
-	shale "github.com/adrianliechti/shale"
-	"github.com/adrianliechti/shale/vfs"
+	bash "github.com/adrianliechti/go-bash"
+	"github.com/adrianliechti/go-bash/vfs"
 )
 
 func TestCanceledOperationsDoNotTouchBackend(t *testing.T) {
 	m := &countingFS{Memory: vfs.NewMemory(1024)}
 	f, _ := m.Memory.OpenFile("file", os.O_CREATE|os.O_WRONLY, 0644)
 	f.Close()
-	b := newShell(t, shale.Options{Mounts: []shale.Mount{{Path: "/data", FS: m}}})
+	b := newShell(t, bash.Options{Mounts: []bash.Mount{{Path: "/data", FS: m}}})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	for range 100 {
@@ -39,7 +39,7 @@ type countingFS struct {
 func (f *countingFS) Open(p string) (fs.File, error) { f.opens++; return f.Memory.Open(p) }
 
 func TestConcurrentCallsSerializeState(t *testing.T) {
-	b := newShell(t, shale.Options{Timeout: 5 * time.Second})
+	b := newShell(t, bash.Options{Timeout: 5 * time.Second})
 	if _, err := b.Exec(t.Context(), "counter=0"); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestQueuedDeadlineAndRecovery(t *testing.T) {
 	f, _ := m.Memory.OpenFile("file", os.O_CREATE|os.O_WRONLY, 0644)
 	f.Write([]byte("done"))
 	f.Close()
-	b := newShell(t, shale.Options{Mounts: []shale.Mount{{Path: "/data", FS: m}}})
+	b := newShell(t, bash.Options{Mounts: []bash.Mount{{Path: "/data", FS: m}}})
 	done := make(chan error, 1)
 	go func() { _, err := b.Exec(t.Context(), "cat /data/file"); done <- err }()
 	select {
@@ -111,7 +111,7 @@ func (f *gatedFS) Open(p string) (fs.File, error) {
 }
 
 func TestReadFileLimitIntegerBoundary(t *testing.T) {
-	b := newShell(t, shale.Options{MaxFileBytes: math.MaxInt64})
+	b := newShell(t, bash.Options{MaxFileBytes: math.MaxInt64})
 	if _, err := b.Exec(t.Context(), "echo contents > file"); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestReadFileLimitIntegerBoundary(t *testing.T) {
 }
 
 func TestTrailingSlashDoesNotOverwriteRegularFile(t *testing.T) {
-	b := newShell(t, shale.Options{})
+	b := newShell(t, bash.Options{})
 	if _, err := b.Exec(t.Context(), "echo keep > /work/file"); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestTrailingSlashDoesNotOverwriteRegularFile(t *testing.T) {
 func TestRedirectionCloseFailureIsNotSuccess(t *testing.T) {
 	want := errors.New("commit failed")
 	m := &closeFailureFS{Memory: vfs.NewMemory(1024), err: want}
-	b := newShell(t, shale.Options{Mounts: []shale.Mount{{Path: "/data", FS: m}}})
+	b := newShell(t, bash.Options{Mounts: []bash.Mount{{Path: "/data", FS: m}}})
 	for _, script := range []string{"printf data > /data/file", "exit 0 > /data/file", "f() { return 0; }; f > /data/file"} {
 		r, err := b.Exec(t.Context(), script)
 		if !errors.Is(err, want) || r.ExitCode == 0 {
@@ -175,7 +175,7 @@ type closeFailureFile struct {
 func (f *closeFailureFile) Close() error { f.owner.closed++; f.File.Close(); return f.owner.err }
 
 func TestPipelinesAndSubstitutionUnderPressure(t *testing.T) {
-	b := newShell(t, shale.Options{Timeout: 2 * time.Second, MaxOutputBytes: 4096})
+	b := newShell(t, bash.Options{Timeout: 2 * time.Second, MaxOutputBytes: 4096})
 	for range 8 {
 		for _, script := range []string{"yes | cat | head -n 1", "printf hello | false | cat", "exit 9 | cat | cat"} {
 			r, err := b.Exec(t.Context(), script)
@@ -191,7 +191,7 @@ func TestPipelinesAndSubstitutionUnderPressure(t *testing.T) {
 		t.Fatalf("shared substitution output: %#v, %v", r, err)
 	}
 	_, err = b.Exec(t.Context(), `x=$(yes); echo must-not-run`)
-	if !errors.Is(err, shale.ErrExecutionLimit) {
+	if !errors.Is(err, bash.ErrExecutionLimit) {
 		t.Fatalf("substitution limit swallowed by WASI: %v", err)
 	}
 	r, err = b.Exec(t.Context(), "echo still-usable")

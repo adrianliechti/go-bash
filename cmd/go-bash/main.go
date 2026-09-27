@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	shale "github.com/adrianliechti/shale"
-	"github.com/adrianliechti/shale/internal/shell"
-	"github.com/adrianliechti/shale/vfs"
+	bash "github.com/adrianliechti/go-bash"
+	"github.com/adrianliechti/go-bash/internal/shell"
+	"github.com/adrianliechti/go-bash/vfs"
 	"mvdan.cc/sh/v3/syntax"
 )
 
@@ -29,16 +29,16 @@ func run() int {
 	version := flag.Bool("version", false, "print the embedded uutils versions")
 	flag.Parse()
 	if *version {
-		versions := shale.Versions()
+		versions := bash.Versions()
 		parts := make([]string, 0, len(versions))
 		for _, name := range slices.Sorted(maps.Keys(versions)) {
 			parts = append(parts, name+" "+versions[name])
 		}
-		fmt.Println("shale (uutils " + strings.Join(parts, ", ") + ")")
+		fmt.Println("go-bash (uutils " + strings.Join(parts, ", ") + ")")
 		return 0
 	}
 	if flag.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: shale [-root DIR] [-readonly] [-c SCRIPT]")
+		fmt.Fprintln(os.Stderr, "usage: go-bash [-root DIR] [-readonly] [-c SCRIPT]")
 		return 2
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -49,7 +49,7 @@ func run() int {
 		return 1
 	}
 	defer dir.Close()
-	b, err := shale.New(ctx, shale.Options{Mounts: []shale.Mount{{Path: "/workspace", FS: dir, ReadOnly: *readOnly}}, Cwd: "/workspace", Timeout: *timeout})
+	b, err := bash.New(ctx, bash.Options{Mounts: []bash.Mount{{Path: "/workspace", FS: dir, ReadOnly: *readOnly}}, Cwd: "/workspace", Timeout: *timeout})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -57,12 +57,12 @@ func run() int {
 	defer b.Close(context.Background())
 	exited := false
 	exec := func(src, stdin string) int {
-		res, err := b.Run(ctx, shale.Request{Script: src, Stdin: stdin})
+		res, err := b.Run(ctx, bash.Request{Script: src, Stdin: stdin})
 		exited = res.Exited
 		fmt.Fprint(os.Stdout, res.Stdout)
 		fmt.Fprint(os.Stderr, res.Stderr)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "shale:", err)
+			fmt.Fprintln(os.Stderr, "go-bash:", err)
 			if res.ExitCode == 0 {
 				return 1
 			}
@@ -82,7 +82,7 @@ func run() int {
 		if !interactive {
 			data, e := io.ReadAll(io.LimitReader(os.Stdin, shell.MaxScript+1))
 			if e != nil || len(data) > shell.MaxScript {
-				fmt.Fprintln(os.Stderr, "shale: input too large or unreadable")
+				fmt.Fprintln(os.Stderr, "go-bash: input too large or unreadable")
 				return 1
 			}
 			stdin = string(data)
@@ -92,18 +92,18 @@ func run() int {
 	if !interactive {
 		data, e := io.ReadAll(io.LimitReader(os.Stdin, shell.MaxScript+1))
 		if e != nil || len(data) > shell.MaxScript {
-			fmt.Fprintln(os.Stderr, "shale: script too large or unreadable")
+			fmt.Fprintln(os.Stderr, "go-bash: script too large or unreadable")
 			return 1
 		}
 		return exec(string(data), "")
 	}
-	fmt.Fprintln(os.Stderr, "shale — /workspace is", *root, "(writes persist unless -readonly)")
+	fmt.Fprintln(os.Stderr, "go-bash — /workspace is", *root, "(writes persist unless -readonly)")
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 4096), shell.MaxScript)
 	var src strings.Builder
 	code := 0
 	for ctx.Err() == nil {
-		prompt := "shale$ "
+		prompt := "go-bash$ "
 		if src.Len() > 0 {
 			prompt = "> "
 		}

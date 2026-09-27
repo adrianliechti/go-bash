@@ -1,6 +1,6 @@
-// Package shale embeds uutils coreutils, grep, find, diff, sed, and ripgrep in a
+// Package bash embeds uutils coreutils, grep, find, diff, sed, and ripgrep in a
 // virtual shell with Go filesystem mounts and custom Go commands.
-package shale
+package bash
 
 import (
 	"bytes"
@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adrianliechti/shale/internal/fsys"
-	"github.com/adrianliechti/shale/internal/shell"
-	"github.com/adrianliechti/shale/internal/wasm"
+	"github.com/adrianliechti/go-bash/internal/fsys"
+	"github.com/adrianliechti/go-bash/internal/shell"
+	"github.com/adrianliechti/go-bash/internal/wasm"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/experimental/sysfs"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -54,7 +54,7 @@ type Options struct {
 type Result struct {
 	Stdout, Stderr string
 	ExitCode       int
-	Exited         bool // script called exit; an interactive caller should end its loop
+	Exited         bool // script terminated the shell; an interactive caller should end its loop
 }
 type Request struct{ Script, Stdin string }
 
@@ -304,8 +304,8 @@ func (s *Shell) command(ctx context.Context, cwd string, args []string, env map[
 	for k, v := range env {
 		mc = mc.WithEnv(k, v)
 	}
-	mc = mc.WithEnv("SHALE_CWD", cwd)
-	mc = mc.WithEnv("SHALE_STDIN", strconv.FormatBool(streams.InSet))
+	mc = mc.WithEnv("BASH_CWD", cwd)
+	mc = mc.WithEnv("BASH_STDIN", strconv.FormatBool(streams.InSet))
 	mod, e := s.runtime.InstantiateModule(ctx, compiled, mc)
 	if mod != nil {
 		_ = mod.Close(ctx)

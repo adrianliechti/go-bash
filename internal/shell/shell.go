@@ -16,7 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/adrianliechti/shale/internal/fsys"
+	"github.com/adrianliechti/go-bash/internal/fsys"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -34,16 +34,24 @@ type IO struct {
 }
 type ExecFunc func(context.Context, string, []string, map[string]string, IO) (int, error)
 type Shell struct {
-	FS        *fsys.Namespace
-	Exec      ExecFunc
-	Cwd       string
-	Exited    bool
-	vars      variables
-	funcs     map[string]*syntax.Stmt
-	status    int
-	subStatus int
-	args      []string
-	depth     int
+	FS            *fsys.Namespace
+	Exec          ExecFunc
+	Cwd           string
+	Exited        bool
+	vars          variables
+	funcs         map[string]*syntax.Stmt
+	status        int
+	subStatus     int
+	args          []string
+	depth         int
+	pipefail      bool
+	errexit       bool
+	nounset       bool
+	xtrace        bool
+	ignoreErrexit int
+	traceDepth    int
+	sourceDepth   int
+	locals        []variables // values to restore when each function returns
 }
 type run struct {
 	ctx      context.Context
@@ -51,11 +59,11 @@ type run struct {
 	maxSteps int64
 }
 
-// IsBuiltin identifies names reserved by the shell, including the export
-// declaration handled by the parser instead of invoke.
+// IsBuiltin identifies names reserved by the shell, including declarations
+// handled by the parser instead of invoke.
 func IsBuiltin(name string) bool {
 	switch name {
-	case ":", "true", "false", "cd", "pwd", "export", "unset", "exit", "return", "break", "continue", "bash", "sh", "xargs":
+	case ":", "true", "false", "cd", "pwd", "export", "local", "declare", "typeset", "readonly", "unset", "exit", "return", "break", "continue", "bash", "sh", "xargs", "set", "shift", "read", "command", "type", "which", "source", ".", "eval":
 		return true
 	}
 	return false
@@ -70,6 +78,7 @@ func New(f *fsys.Namespace, cwd string, env map[string]string, exec ExecFunc) *S
 		s.vars[k] = variable(v, true)
 	}
 	s.vars["PWD"] = variable(cwd, true)
+	s.vars["PS4"] = variable("+ ", false)
 	return s
 }
 func (s *Shell) clone() *Shell {
@@ -77,6 +86,10 @@ func (s *Shell) clone() *Shell {
 	c.vars = maps.Clone(s.vars)
 	c.funcs = maps.Clone(s.funcs)
 	c.args = append([]string(nil), s.args...)
+	c.locals = make([]variables, len(s.locals))
+	for i, scope := range s.locals {
+		c.locals[i] = maps.Clone(scope)
+	}
 	return &c
 }
 
@@ -124,14 +137,21 @@ func Parse(src string) (*syntax.File, error) {
 			if n.Select {
 				e = errors.New("select is not supported")
 			}
-			if _, ok := n.Loop.(*syntax.WordIter); !ok {
-				e = errors.New("C-style for loops are not supported")
-			}
 		case *syntax.DeclClause:
-			if n.Variant.Value != "export" {
+			switch n.Variant.Value {
+			case "export", "local", "declare", "typeset", "readonly":
+			default:
 				e = fmt.Errorf("%s is not supported", n.Variant.Value)
 			}
-		case *syntax.TestClause, *syntax.CaseClause, *syntax.TimeClause, *syntax.CoprocClause, *syntax.LetClause:
+		case *syntax.UnaryTest:
+			if !supportedUnaryTest(n.Op) {
+				e = fmt.Errorf("unsupported conditional operator: %s", n.Op)
+			}
+		case *syntax.BinaryTest:
+			if !supportedBinaryTest(n.Op) {
+				e = fmt.Errorf("unsupported conditional operator: %s", n.Op)
+			}
+		case *syntax.TimeClause, *syntax.CoprocClause, *syntax.LetClause:
 			e = fmt.Errorf("unsupported shell construct %T", n)
 		case *syntax.Redirect:
 			e = validateRedirect(n)
@@ -149,7 +169,7 @@ func (s *Shell) Run(ctx context.Context, src string, streams IO, maxSteps int64)
 	r := &run{ctx: ctx, maxSteps: maxSteps}
 	code, e := s.list(r, f.Stmts, streams)
 	var control flow
-	if errors.As(e, &control) && control.kind == "exit" {
+	if errors.As(e, &control) && control.terminates() {
 		s.Exited = true
 		return control.code, nil
 	}
@@ -180,6 +200,45 @@ func (s *Shell) stmt(r *run, stmt *syntax.Stmt, streams IO) (int, error) {
 	return s.stmtWithPipe(r, stmt, streams, false)
 }
 func (s *Shell) stmtWithPipe(r *run, stmt *syntax.Stmt, streams IO, pipeAll bool) (code int, err error) {
+	if stmt.Negated {
+		s.ignoreErrexit++
+		defer func() { s.ignoreErrexit-- }()
+	}
+	diagnostics := streams.Err
+	var closers []io.Closer
+	failedRedirect := false
+	defer func() {
+		var unset expand.UnsetParameterError
+		var readonly readonlyError
+		if errors.As(err, &unset) || errors.As(err, &readonly) {
+			fmt.Fprintln(diagnostics, "go-bash:", err)
+			code, err = 1, flow{"fatal", 1}
+		}
+		for i := len(closers) - 1; i >= 0; i-- {
+			if closeErr := closers[i].Close(); closeErr != nil {
+				var control flow
+				if err == nil || errors.As(err, &control) {
+					code, err = 1, fmt.Errorf("close redirection: %w", closeErr)
+				}
+			}
+		}
+		// Lists and compound commands already checked their executed children.
+		// In particular, a skipped right side of && must not trigger errexit.
+		check := failedRedirect
+		switch c := stmt.Cmd.(type) {
+		case nil, *syntax.CallExpr, *syntax.Subshell, *syntax.TestClause, *syntax.ArithmCmd, *syntax.DeclClause:
+			check = true
+		case *syntax.BinaryCmd:
+			check = check || c.Op == syntax.Pipe || c.Op == syntax.PipeAll
+		}
+		if stmt.Negated && err == nil {
+			code = conditionStatus(code != 0)
+		}
+		if err == nil && code != 0 && check && s.errexit && s.ignoreErrexit == 0 {
+			err = flow{"errexit", code}
+		}
+		s.status = code
+	}()
 	if e := r.step(); e != nil {
 		return 1, e
 	}
@@ -196,38 +255,25 @@ func (s *Shell) stmtWithPipe(r *run, stmt *syntax.Stmt, streams IO, pipeAll bool
 		}
 	}
 	io2, closers, e := s.redirect(r, stmt.Redirs, streams)
-	defer func() {
-		for i := len(closers) - 1; i >= 0; i-- {
-			if closeErr := closers[i].Close(); closeErr != nil {
-				var control flow
-				if err == nil || errors.As(err, &control) {
-					code, err = 1, fmt.Errorf("close redirection: %w", closeErr)
-				}
-			}
-		}
-	}()
 	if e != nil {
-		if errors.Is(e, ErrLimit) || r.ctx.Err() != nil {
+		var unset expand.UnsetParameterError
+		var readonly readonlyError
+		if errors.Is(e, ErrLimit) || r.ctx.Err() != nil || errors.As(e, &unset) || errors.As(e, &readonly) {
 			return 1, e
 		}
-		fmt.Fprintln(streams.Err, "shale:", e)
+		fmt.Fprintln(streams.Err, "go-bash:", e)
+		failedRedirect = true
 		return 1, nil
 	}
 	// Bash's |& duplicates stderr after applying the command's redirections.
 	if pipeAll {
 		io2.Err = io2.Out
 	}
+	diagnostics = io2.Err
 	if simple {
 		code, e = s.call(r, call, args, io2)
 	} else {
 		code, e = s.command(r, stmt.Cmd, io2)
-	}
-	if stmt.Negated && e == nil {
-		if code == 0 {
-			code = 1
-		} else {
-			code = 0
-		}
 	}
 	s.status = code
 	return code, e
@@ -243,7 +289,7 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 	case *syntax.Subshell:
 		code, e := s.clone().list(r, c.Stmts, streams)
 		var f flow
-		if errors.As(e, &f) && f.kind == "exit" {
+		if errors.As(e, &f) && f.terminates() {
 			e = nil
 		}
 		return code, e
@@ -251,7 +297,7 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 		if c.Op == syntax.Pipe || c.Op == syntax.PipeAll {
 			return s.pipeline(r, c, streams)
 		}
-		code, e := s.stmt(r, c.X, streams)
+		code, e := s.ignoringErrexit(func() (int, error) { return s.stmt(r, c.X, streams) })
 		if e != nil {
 			return code, e
 		}
@@ -260,7 +306,7 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 		}
 		return code, nil
 	case *syntax.IfClause:
-		code, e := s.list(r, c.Cond, streams)
+		code, e := s.ignoringErrexit(func() (int, error) { return s.list(r, c.Cond, streams) })
 		if e != nil {
 			return code, e
 		}
@@ -272,45 +318,18 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 		}
 		return 0, nil
 	case *syntax.ForClause:
-		loop := c.Loop.(*syntax.WordIter)
-		items := s.args
-		var e error
-		if loop.InPos.IsValid() {
-			items, e = s.fields(r, loop.Items, streams)
-			if e != nil {
-				return 1, e
-			}
-		}
-		code := 0
-		for _, item := range items {
-			if e = r.step(); e != nil {
-				return 1, e
-			}
-			if e = s.vars.Set(loop.Name.Value, variable(item, false)); e != nil {
-				return 1, e
-			}
-			code, e = s.list(r, c.Do, streams)
-			var f flow
-			if errors.As(e, &f) {
-				if f.kind == "break" {
-					return 0, nil
-				}
-				if f.kind == "continue" {
-					continue
-				}
-			}
-			if e != nil {
-				return code, e
-			}
-		}
-		return code, nil
+		return s.forLoop(r, c, streams)
+	case *syntax.CaseClause:
+		return s.caseClause(r, c, streams)
+	case *syntax.TestClause:
+		return s.testExpr(r, c.X, streams)
 	case *syntax.WhileClause:
 		code := 0
 		for {
 			if e := r.step(); e != nil {
 				return 1, e
 			}
-			cond, e := s.list(r, c.Cond, streams)
+			cond, e := s.ignoringErrexit(func() (int, error) { return s.list(r, c.Cond, streams) })
 			if e != nil {
 				return cond, e
 			}
@@ -338,19 +357,7 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 		s.funcs[c.Name.Value] = c.Body
 		return 0, nil
 	case *syntax.DeclClause:
-		for _, a := range c.Args {
-			if a.Name == nil {
-				return 2, errors.New("dynamic export arguments are not supported")
-			}
-			if a.Naked {
-				v := s.vars[a.Name.Value]
-				v.Exported = true
-				s.vars[a.Name.Value] = v
-			} else if e := s.assign(r, a, true, streams); e != nil {
-				return 1, e
-			}
-		}
-		return 0, nil
+		return s.declare(r, c, streams)
 	case *syntax.ArithmCmd:
 		n, e := expand.Arithm(s.config(r, streams), c.X)
 		if e != nil {
@@ -364,6 +371,11 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 		return 2, fmt.Errorf("unsupported shell construct %T", cmd)
 	}
 }
+func (s *Shell) ignoringErrexit(fn func() (int, error)) (int, error) {
+	s.ignoreErrexit++
+	defer func() { s.ignoreErrexit-- }()
+	return fn()
+}
 func (s *Shell) assign(r *run, a *syntax.Assign, export bool, streams IO) error {
 	v, e := expand.Literal(s.config(r, streams), a.Value)
 	if e != nil {
@@ -371,6 +383,9 @@ func (s *Shell) assign(r *run, a *syntax.Assign, export bool, streams IO) error 
 	}
 	if a.Append {
 		v = s.vars.Get(a.Name.Value).String() + v
+	}
+	if err := s.traceAssignment(streams, a.Name.Value, v); err != nil {
+		return err
 	}
 	return s.vars.Set(a.Name.Value, variable(v, export))
 }
@@ -391,7 +406,7 @@ func (s *Shell) call(r *run, c *syntax.CallExpr, args []string, streams IO) (int
 		before := make(map[string]expand.Variable)
 		defer func() {
 			for k, v := range before {
-				if v.IsSet() || v.Exported {
+				if v.Declared() {
 					s.vars[k] = v
 				} else {
 					delete(s.vars, k)
@@ -410,6 +425,9 @@ func (s *Shell) call(r *run, c *syntax.CallExpr, args []string, streams IO) (int
 	return s.invoke(r, args, streams)
 }
 func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
+	if err := s.trace(streams, args...); err != nil {
+		return 1, err
+	}
 	if body := s.funcs[args[0]]; body != nil {
 		if s.depth >= 64 {
 			return 1, ErrLimit
@@ -417,7 +435,20 @@ func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
 		old := s.args
 		s.args = args[1:]
 		s.depth++
-		defer func() { s.args = old; s.depth-- }()
+		s.locals = append(s.locals, make(variables))
+		defer func() {
+			scope := s.locals[len(s.locals)-1]
+			for name, value := range scope {
+				if value.Declared() {
+					s.vars[name] = value
+				} else {
+					delete(s.vars, name)
+				}
+			}
+			s.locals = s.locals[:len(s.locals)-1]
+			s.args = old
+			s.depth--
+		}()
 		code, e := s.stmt(r, body, streams)
 		var f flow
 		if errors.As(e, &f) && f.kind == "return" {
@@ -425,11 +456,31 @@ func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
 		}
 		return code, e
 	}
+	return s.invokeBuiltin(r, args, streams)
+}
+
+func (s *Shell) invokeBuiltin(r *run, args []string, streams IO) (int, error) {
 	switch args[0] {
 	case ":", "true":
 		return 0, nil
 	case "false":
 		return 1, nil
+	case "set":
+		return s.set(args[1:], streams)
+	case "shift":
+		return s.shift(args[1:], streams)
+	case "read":
+		return s.read(r, args[1:], streams)
+	case "command":
+		return s.commandBuiltin(r, args[1:], streams)
+	case "type", "which":
+		return s.describe(args[0], args[1:], streams)
+	case "source", ".":
+		return s.source(r, args[1:], streams)
+	case "eval":
+		return s.eval(r, args[1:], streams)
+	case "export", "local", "declare", "typeset", "readonly":
+		return s.declareWords(r, args[0], args[1:], streams)
 	case "cd":
 		if len(args) > 2 {
 			fmt.Fprintln(streams.Err, "cd: too many arguments")
@@ -442,15 +493,24 @@ func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
 		if dest == "-" {
 			dest = s.vars.Get("OLDPWD").String()
 		}
+		if dest == "" {
+			fmt.Fprintln(streams.Err, "cd: null directory")
+			return 1, nil
+		}
 		dest = fsys.Resolve(s.Cwd, dest)
 		i, e := s.FS.Stat(dest)
 		if e != nil || !i.IsDir() {
 			fmt.Fprintln(streams.Err, "cd: cannot enter", dest)
 			return 1, nil
 		}
-		s.vars["OLDPWD"] = variable(s.Cwd, true)
+		oldCwd := s.Cwd
 		s.Cwd = path.Clean(dest)
-		s.vars["PWD"] = variable(s.Cwd, true)
+		if err := s.vars.Set("OLDPWD", variable(oldCwd, true)); err != nil {
+			return variableFailure("cd", err, streams)
+		}
+		if err := s.vars.Set("PWD", variable(s.Cwd, true)); err != nil {
+			return variableFailure("cd", err, streams)
+		}
 		return 0, nil
 	case "pwd":
 		if len(args) > 1 && !(len(args) == 2 && (args[1] == "-L" || args[1] == "-P")) {
@@ -459,11 +519,12 @@ func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
 		_, e := fmt.Fprintln(streams.Out, s.Cwd)
 		return 0, e
 	case "unset":
-		for _, k := range args[1:] {
-			delete(s.vars, k)
-		}
-		return 0, nil
+		return s.unset(args[1:], streams)
 	case "exit", "return":
+		if args[0] == "return" && len(s.locals) == 0 && s.sourceDepth == 0 {
+			fmt.Fprintln(streams.Err, "return: can only return from a function or sourced script")
+			return 1, nil
+		}
 		code := s.status
 		if len(args) > 2 {
 			return 2, errors.New("too many arguments")
@@ -482,67 +543,32 @@ func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
 		}
 		return 0, flow{args[0], 0}
 	case "bash", "sh":
-		if s.depth >= 64 {
-			return 1, ErrLimit
-		}
-		if len(args) < 3 || args[1] != "-c" {
-			fmt.Fprintln(streams.Err, "shale: nested shells support -c SCRIPT")
-			return 2, nil
-		}
-		f, e := Parse(args[2])
-		if e != nil {
-			return 2, e
-		}
-		child := New(s.FS, s.Cwd, s.exported(), s.Exec)
-		child.depth = s.depth + 1
-		child.vars["0"] = variable(args[0], false)
-		if len(args) > 3 {
-			child.args = args[4:]
-			child.vars["0"] = variable(args[3], false)
-		}
-		code, e := child.list(r, f.Stmts, streams)
-		var control flow
-		if errors.As(e, &control) && control.kind == "exit" {
-			e = nil
-		}
-		return code, e
+		return s.nestedShell(r, args, streams)
 	case "xargs":
 		return s.xargs(r, args[1:], streams)
 	}
 	return s.external(r, args, streams)
 }
 
-// external resolves a command through PATH or an explicit /bin path and runs
-// it through the registered command handler.
+// external resolves registered commands and guest shell scripts using the same
+// virtual PATH lookup as command, type, and which.
 func (s *Shell) external(r *run, args []string, streams IO) (int, error) {
 	env := s.exported()
 	env["PWD"] = s.Cwd
-	name := args[0]
-	if strings.Contains(name, "/") {
-		name = fsys.Resolve(s.Cwd, name)
-		if path.Dir(name) != "/bin" && path.Dir(name) != "/usr/bin" {
-			fmt.Fprintln(streams.Err, name+": command not found")
-			return 127, nil
+	names, denied := s.lookup(args[0], false, false)
+	if len(names) == 0 {
+		if denied {
+			fmt.Fprintln(streams.Err, args[0]+": permission denied")
+			return 126, nil
 		}
-		name = path.Base(name)
-	} else {
-		found := false
-		for _, dir := range strings.Split(s.vars.Get("PATH").String(), ":") {
-			p := fsys.Resolve(s.Cwd, path.Join(dir, name))
-			if path.Dir(p) != "/bin" && path.Dir(p) != "/usr/bin" {
-				continue
-			}
-			if info, err := s.FS.Stat(p); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
-				found = true
-				break
-			}
-		}
-		if !found {
-			fmt.Fprintln(streams.Err, name+": command not found")
-			return 127, nil
-		}
+		fmt.Fprintln(streams.Err, args[0]+": command not found")
+		return 127, nil
 	}
-	return s.Exec(r.ctx, s.Cwd, append([]string{name}, args[1:]...), env, streams)
+	name := fsys.Resolve(s.Cwd, names[0])
+	if path.Dir(name) == "/bin" || path.Dir(name) == "/usr/bin" {
+		return s.Exec(r.ctx, s.Cwd, append([]string{path.Base(name)}, args[1:]...), env, streams)
+	}
+	return s.script(r, names[0], args[1:], streams)
 }
 
 // xargs is a builtin because WASI cannot spawn processes: the command lines it
@@ -745,7 +771,8 @@ type flow struct {
 	code int
 }
 
-func (f flow) Error() string { return f.kind }
+func (f flow) Error() string    { return f.kind }
+func (f flow) terminates() bool { return f.kind == "exit" || f.kind == "errexit" || f.kind == "fatal" }
 
 func (s *Shell) pipeline(r *run, c *syntax.BinaryCmd, streams IO) (int, error) {
 	reader, writer := io.Pipe()
@@ -777,12 +804,18 @@ func (s *Shell) pipeline(r *run, c *syntax.BinaryCmd, streams IO) (int, error) {
 	if l.err != nil && !errors.Is(l.err, io.ErrClosedPipe) {
 		return l.code, l.err
 	}
+	if s.pipefail && code == 0 {
+		if errors.Is(l.err, io.ErrClosedPipe) {
+			return 141, nil // the virtual equivalent of SIGPIPE
+		}
+		return l.code, nil
+	}
 	return code, nil
 }
 
 func pipelineFlow(err error) error {
 	var f flow
-	if errors.As(err, &f) && f.kind == "exit" {
+	if errors.As(err, &f) && f.terminates() {
 		return nil
 	}
 	return err
@@ -790,7 +823,7 @@ func pipelineFlow(err error) error {
 
 func (s *Shell) config(r *run, streams IO) *expand.Config {
 	env := &environment{s: s}
-	return &expand.Config{Env: env, ReadDir2: func(p string) ([]fs.DirEntry, error) {
+	return &expand.Config{Env: env, NoUnset: s.nounset, ReadDir2: func(p string) ([]fs.DirEntry, error) {
 		if e := r.step(); e != nil {
 			return nil, e
 		}
@@ -805,6 +838,8 @@ func (s *Shell) config(r *run, streams IO) *expand.Config {
 		}
 		child := s.clone()
 		child.depth++
+		child.traceDepth++
+		child.errexit = false // Bash clears -e in command substitutions by default.
 		out := &boundedWriter{w: w, left: maxExpansion}
 		code, e := child.list(r, c.Stmts, IO{In: streams.In, Out: out, Err: streams.Err, InSet: streams.InSet})
 		s.subStatus = code
@@ -812,7 +847,7 @@ func (s *Shell) config(r *run, streams IO) *expand.Config {
 			return out.err
 		}
 		var control flow
-		if errors.As(e, &control) && control.kind == "exit" {
+		if errors.As(e, &control) && control.terminates() {
 			e = nil
 		}
 		return e
@@ -882,7 +917,12 @@ func (v variables) Set(k string, val expand.Variable) error {
 		return ErrLimit
 	}
 	old := v[k]
+	if old.ReadOnly {
+		return readonlyError(k)
+	}
 	val.Exported = val.Exported || old.Exported
+	val.ReadOnly = val.ReadOnly || old.ReadOnly
+	val.Local = val.Local || old.Local
 	v[k] = val
 	return nil
 }
@@ -904,15 +944,31 @@ func (e *environment) Get(k string) expand.Variable {
 		return variable(strconv.Itoa(e.s.status), false)
 	case "#":
 		return variable(strconv.Itoa(len(e.s.args)), false)
+	case "-":
+		flags := ""
+		if e.s.errexit {
+			flags += "e"
+		}
+		if e.s.nounset {
+			flags += "u"
+		}
+		if e.s.xtrace {
+			flags += "x"
+		}
+		return variable(flags, false)
 	case "@", "*":
-		return expand.Variable{Set: true, Kind: expand.Indexed, List: e.s.args}
+		args := e.s.args
+		if args == nil {
+			args = []string{} // expansion distinguishes empty "$@" from a scalar
+		}
+		return expand.Variable{Set: true, Kind: expand.Indexed, List: args}
 	case "$", "PPID":
 		return variable("1", false)
 	case "0":
 		if v := e.s.vars[k]; v.IsSet() {
 			return v
 		}
-		return variable("shale", false)
+		return variable("go-bash", false)
 	}
 	// Satisfy the expansion library's home lookup hook even for unknown users,
 	// preserving their literal tilde instead of falling back to os/user.Lookup.

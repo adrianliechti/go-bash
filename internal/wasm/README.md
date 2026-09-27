@@ -6,7 +6,7 @@ Command aliases share the artifact bytes without copying them.
 
 | Artifact | Commands | Source | Archive SHA-256 | Size |
 | --- | --- | --- | --- | --- |
-| `coreutils.wasm` | 77 coreutils, `[`, `coreutils` | [uutils/coreutils 0.11.0](https://github.com/uutils/coreutils/tree/0.11.0) | `a47966117783bef18650cc724f1b1d061b717ac91a0feaabdd34910703cf70a4` | ~8 MB |
+| `coreutils.wasm` | 79 utilities (including `[`), `coreutils` | [uutils/coreutils 0.12.0](https://github.com/uutils/coreutils/tree/0.12.0) | `4fb327655cb4ffcbf2f16550cf9234079ffe839692f7aa1a6eda104af684e122` | ~8 MB |
 | `grep.wasm` | `grep` | [uutils/grep 0.2.0](https://github.com/uutils/grep/tree/0.2.0) | `aabb48c5f14aa46befa4b0b2848889d3ca2ff819d5855acfab590f7f47d223b9` | ~1.1 MB |
 | `find.wasm` | `find` | [uutils/findutils 0.10.0](https://github.com/uutils/findutils/tree/0.10.0) | `e36ae3937f889bc59cfbd65820a642baa695c58d7fa1e387e41857e710f40419` | ~1.6 MB |
 | `diffutils.wasm` | `diff`, `cmp` | [uutils/diffutils v0.5.0](https://github.com/uutils/diffutils/tree/v0.5.0) | `4c05d236ebddef7738446980a59cd13521b6990ea02242db6b32321dd93853ca` | ~1.1 MB |
@@ -35,13 +35,13 @@ WASI cannot spawn processes, so the shell implements `xargs` itself and `find`'s
 ## Working directory
 
 WASI libc starts every command at `/` and offers no way to seed its emulated
-working directory from the host. The Go host sets `SHALE_CWD` to the shell's
+working directory from the host. The Go host sets `BASH_CWD` to the shell's
 current virtual directory on every invocation, and the guest changes to it
 before `main` runs. Two mechanisms do this:
 
 - [`coreutils-cwd.patch`](../../scripts/patches/coreutils-cwd.patch) changes only
   the multicall launcher of coreutils to call `set_current_dir`.
-- [`shale_cwd.c`](../../scripts/wasi/shale_cwd.c) is a C constructor linked into
+- [`bash_cwd.c`](../../scripts/wasi/bash_cwd.c) is a C constructor linked into
   every other artifact through `-C link-arg`. It needs no source patch, and can
   replace the coreutils patch at the next coreutils rebuild.
 
@@ -64,9 +64,9 @@ Relative-path and `cd` integration tests cover both mechanisms.
 - [`ripgrep-wasi.patch`](../../scripts/patches/ripgrep-wasi.patch): WASI cannot
   spawn threads, so all searches use the sequential walker, including explicit
   `-j` requests. Native stdin introspection is unavailable for Go-backed streams;
-  ripgrep reads the host's `SHALE_STDIN` flag to choose stdin versus cwd. The host
+  ripgrep reads the host's `BASH_STDIN` flag to choose stdin versus cwd. The host
   sets this after exported variables, so shell assignments cannot spoof it.
-  The build script also avoids embedding the enclosing Shale Git revision when
+  The build script also avoids embedding the enclosing go-bash Git revision when
   ripgrep is built from a source archive. PCRE2 is not enabled, and options that
   need subprocesses (`--pre`, `-z`) cannot operate in this runtime.
 

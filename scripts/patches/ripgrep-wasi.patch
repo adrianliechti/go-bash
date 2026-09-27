@@ -4,7 +4,7 @@
  fn set_git_revision_hash() {
      use std::process::Command;
 
-+    // Release archives may be unpacked inside Shale's checkout. Do not embed
++    // Release archives may be unpacked inside go-bash's checkout. Do not embed
 +    // the enclosing repository's revision as ripgrep's revision.
 +    if !std::path::Path::new(".git").exists() {
 +        return;
@@ -32,11 +32,11 @@
      }
 
 -    #[cfg(not(any(unix, windows)))]
-+    // Shale's streams do not have native file-descriptor metadata. The host
++    // go-bash's streams do not have native file-descriptor metadata. The host
 +    // supplies this flag for pipes, redirects, and explicit request input.
 +    #[cfg(target_os = "wasi")]
 +    fn imp() -> bool {
-+        std::env::var("SHALE_STDIN").as_deref() == Ok("true")
++        std::env::var("BASH_STDIN").as_deref() == Ok("true")
 +    }
 +
 +    #[cfg(not(any(unix, windows, target_os = "wasi")))]

@@ -1,12 +1,12 @@
 # A virtual Python command
 
-Registers `python` and `python3` using Shale's `Options.Commands` and
+Registers `python` and `python3` using go-bash's `Options.Commands` and
 [`go-pyodide`](https://github.com/adrianliechti/go-pyodide). Both the shell tools
 and CPython run as embedded WASM; no host Python executable is used.
 
-This example has its own Go module so Shale users do not need the Python
+This example has its own Go module so go-bash users do not need the Python
 dependency. It requires Go 1.27.1 and a sibling checkout at `../go-pyodide`
-relative to the Shale repository. The two `replace` directives in `go.mod`
+relative to the go-bash repository. The two `replace` directives in `go.mod`
 use those local sources.
 
 ```sh
@@ -47,7 +47,7 @@ read-only; its `Mount.Dir` API can separately expose a host directory for writes
 
 Python exit statuses become shell exit statuses, so `&&`, `||`, and `$?` work.
 Go errors and cancellation remain execution errors. The example caps each
-Python instance at 128 MiB; Shale's WASM memory setting applies to its own
+Python instance at 128 MiB; go-bash's WASM memory setting applies to its own
 embedded tools, while custom handlers configure their own runtime limits.
 
 ```sh

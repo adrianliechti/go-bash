@@ -1,4 +1,4 @@
-package shale_test
+package bash_test
 
 import (
 	"context"
@@ -13,12 +13,12 @@ import (
 	"testing/fstest"
 	"time"
 
-	shale "github.com/adrianliechti/shale"
+	bash "github.com/adrianliechti/go-bash"
 )
 
 func TestCustomCommands(t *testing.T) {
-	handlers := map[string]shale.CommandFunc{
-		"inspect": func(ctx context.Context, cmd *shale.Command) (int, error) {
+	handlers := map[string]bash.CommandFunc{
+		"inspect": func(ctx context.Context, cmd *bash.Command) (int, error) {
 			data, err := fs.ReadFile(cmd.FS, strings.TrimPrefix(path.Join(cmd.Cwd, cmd.Args[1]), "/"))
 			if err != nil {
 				return 1, err
@@ -27,11 +27,11 @@ func TestCustomCommands(t *testing.T) {
 			cmd.Env["LABEL"] = "changed"
 			return 0, nil
 		},
-		"relay": func(ctx context.Context, cmd *shale.Command) (int, error) {
+		"relay": func(ctx context.Context, cmd *bash.Command) (int, error) {
 			_, err := io.Copy(cmd.Stdout, cmd.Stdin)
 			return 0, err
 		},
-		"save": func(ctx context.Context, cmd *shale.Command) (int, error) {
+		"save": func(ctx context.Context, cmd *bash.Command) (int, error) {
 			name := strings.TrimPrefix(path.Join(cmd.Cwd, cmd.Args[1]), "/")
 			file, err := cmd.FS.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 			if err != nil {
@@ -40,11 +40,11 @@ func TestCustomCommands(t *testing.T) {
 			_, err = io.Copy(file, cmd.Stdin)
 			return 0, errors.Join(err, file.Close())
 		},
-		"fail": func(ctx context.Context, cmd *shale.Command) (int, error) {
+		"fail": func(ctx context.Context, cmd *bash.Command) (int, error) {
 			fmt.Fprintln(cmd.Stderr, "failed")
 			return 7, nil
 		},
-		"fscheck": func(ctx context.Context, cmd *shale.Command) (int, error) {
+		"fscheck": func(ctx context.Context, cmd *bash.Command) (int, error) {
 			for _, name := range []string{"/work", "../work", "work/../work"} {
 				if _, err := cmd.FS.Open(name); !errors.Is(err, fs.ErrInvalid) {
 					return 1, fmt.Errorf("invalid path %q: %v", name, err)
@@ -54,7 +54,7 @@ func TestCustomCommands(t *testing.T) {
 			return 0, err
 		},
 	}
-	b := newShell(t, shale.Options{Commands: handlers, Mounts: []shale.Mount{{Path: "/data", FS: fstest.MapFS{"file": {Data: []byte("mounted\n")}}}}})
+	b := newShell(t, bash.Options{Commands: handlers, Mounts: []bash.Mount{{Path: "/data", FS: fstest.MapFS{"file": {Data: []byte("mounted\n")}}}}})
 	delete(handlers, "inspect")
 	for _, tc := range []struct{ script, want string }{
 		{"echo hello > greeting; LABEL=one inspect greeting", "inspect:/work:one:hello\n"},
@@ -71,7 +71,7 @@ func TestCustomCommands(t *testing.T) {
 		{"PATH=/missing relay; echo $?", "127\n"},
 		{"PATH=/missing /bin/relay <<< absolute", "absolute\n"},
 		{"(cd /bin; ./relay <<< relative)", "relative\n"},
-		{"echo fake > /work/relay; /work/relay; echo $?", "127\n"},
+		{"echo fake > /work/relay; /work/relay; echo $?", "126\n"},
 		{"echo no > /bin/relay; echo $?", "1\n"},
 		{"sh -c 'relay <<< nested'", "nested\n"},
 		{"fscheck", ""},
@@ -84,17 +84,17 @@ func TestCustomCommands(t *testing.T) {
 }
 
 func TestInvalidCustomCommands(t *testing.T) {
-	noop := func(context.Context, *shale.Command) (int, error) { return 0, nil }
-	for _, name := range []string{"", ".", "..", "a/b", "/python", "a\\b", "a\x00b", "cat", "rg", "cd", "export", "sh", "xargs"} {
+	noop := func(context.Context, *bash.Command) (int, error) { return 0, nil }
+	for _, name := range []string{"", ".", "..", "a/b", "/python", "a\\b", "a\x00b", "cat", "rg", "cd", "export", "sh", "xargs", "set", "shift", "read"} {
 		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
-			b, err := shale.New(t.Context(), shale.Options{Commands: map[string]shale.CommandFunc{name: noop}})
+			b, err := bash.New(t.Context(), bash.Options{Commands: map[string]bash.CommandFunc{name: noop}})
 			if err == nil {
 				b.Close(t.Context())
 				t.Fatal("invalid or reserved name accepted")
 			}
 		})
 	}
-	if b, err := shale.New(t.Context(), shale.Options{Commands: map[string]shale.CommandFunc{"python": nil}}); err == nil {
+	if b, err := bash.New(t.Context(), bash.Options{Commands: map[string]bash.CommandFunc{"python": nil}}); err == nil {
 		b.Close(t.Context())
 		t.Fatal("nil handler accepted")
 	}
@@ -102,23 +102,23 @@ func TestInvalidCustomCommands(t *testing.T) {
 
 func TestCustomCommandErrorsAndLimits(t *testing.T) {
 	errHandler := errors.New("handler failed")
-	b := newShell(t, shale.Options{Timeout: 100 * time.Millisecond, MaxOutputBytes: 64, Commands: map[string]shale.CommandFunc{
-		"wait": func(ctx context.Context, cmd *shale.Command) (int, error) {
+	b := newShell(t, bash.Options{Timeout: 100 * time.Millisecond, MaxOutputBytes: 64, Commands: map[string]bash.CommandFunc{
+		"wait": func(ctx context.Context, cmd *bash.Command) (int, error) {
 			<-ctx.Done()
 			return 1, ctx.Err()
 		},
-		"burst": func(ctx context.Context, cmd *shale.Command) (int, error) {
+		"burst": func(ctx context.Context, cmd *bash.Command) (int, error) {
 			_, err := io.WriteString(cmd.Stdout, strings.Repeat("x", 128))
 			return 1, err
 		},
-		"broken": func(context.Context, *shale.Command) (int, error) { return 1, errHandler },
+		"broken": func(context.Context, *bash.Command) (int, error) { return 1, errHandler },
 	}})
 	for _, tc := range []struct {
 		script string
 		want   error
 	}{
 		{"wait; echo bad", context.DeadlineExceeded},
-		{"burst; echo bad", shale.ErrOutputLimit},
+		{"burst; echo bad", bash.ErrOutputLimit},
 		{"broken; echo bad", errHandler},
 	} {
 		r, err := b.Exec(t.Context(), tc.script)

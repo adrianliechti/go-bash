@@ -1,4 +1,4 @@
-package shale
+package bash
 
 import (
 	"errors"
@@ -10,8 +10,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/adrianliechti/shale/internal/fsys"
-	"github.com/adrianliechti/shale/vfs"
+	"github.com/adrianliechti/go-bash/internal/fsys"
+	"github.com/adrianliechti/go-bash/vfs"
 )
 
 func TestCommandFSWrites(t *testing.T) {

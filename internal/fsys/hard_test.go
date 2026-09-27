@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adrianliechti/shale/vfs"
+	"github.com/adrianliechti/go-bash/vfs"
 	ws "github.com/tetratelabs/wazero/experimental/sys"
 )
 

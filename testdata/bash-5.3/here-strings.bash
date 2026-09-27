@@ -1,0 +1,71 @@
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Selected from GNU Bash 5.3 tests/herestr.tests, lines 20-67, 71-75.
+# Excerpts selected for go-bash on 2026-09-27.
+# See README.md for provenance, adaptations, and omitted coverage.
+
+# basics
+read x <<<"alpha"
+echo "$x"
+read x <<<beta
+echo "$x"
+X=4
+read x <<<$X
+echo "$x"
+read x <<<"$X"
+echo "$x"
+unset X
+
+# empty here-strings
+read x <<<""
+echo "$x"
+read x <<<"$empty"
+echo "$x"
+read x <<<$empty
+echo "$x"
+
+a=hot
+b=damn
+f1()
+{
+cat <<< "abcde"
+
+cat <<< "yo"
+
+cat <<< "$a $b"
+
+cat <<< 'what a fabulous window treatment'
+
+cat <<< 'double"quote'
+}
+
+f2()
+{
+cat <<< onetwothree
+}
+
+f3()
+{
+cat <<< "$@"
+}
+
+f1
+f2
+f3 first second third
+
+cat <<< 'echo $(echo hi)'
+
+cat <<< "echo ho"
+
+cat <<< "echo $(echo off to work we go)"

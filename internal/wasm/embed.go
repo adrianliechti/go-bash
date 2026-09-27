@@ -27,7 +27,7 @@ var sed []byte
 var ripgrep []byte
 
 // Version is the pinned uutils coreutils release.
-const Version = "0.11.0"
+const Version = "0.12.0"
 
 // Module is one embedded WASI executable and the commands it provides.
 type Module struct {
@@ -65,7 +65,7 @@ func sorted(names []string) []string {
 	return names
 }
 
-const coreutilsCommands = "arch base32 base64 basename basenc cat comm cp csplit cut date dd dir dircolors dirname echo expand expr factor false fmt fold head join link ln ls mkdir mktemp mv nl nproc numfmt od paste pathchk pr printenv printf ptx pwd readlink realpath rm rmdir seq shred shuf sleep sort split sum tail tee test touch tr true truncate tsort tty uname unexpand uniq unlink vdir wc yes cksum b2sum md5sum sha1sum sha224sum sha256sum sha384sum sha512sum"
+const coreutilsCommands = "arch base32 base64 basename basenc cat comm cp csplit cut date dd dir dircolors dirname echo expand expr factor false fmt fold head hostid join link ln ls mkdir mktemp mv nice nl nproc numfmt od paste pathchk pr printenv printf ptx pwd readlink realpath rm rmdir seq shred shuf sleep sort split sum tail tee test touch tr true truncate tsort tty uname unexpand uniq unlink vdir wc yes cksum b2sum md5sum sha1sum sha224sum sha256sum sha384sum sha512sum"
 
 var byCommand = func() map[string]*Module {
 	m := make(map[string]*Module)

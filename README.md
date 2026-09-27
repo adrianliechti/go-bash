@@ -1,7 +1,7 @@
-# Shale
+# go-bash
 
-A Go-owned virtual shell with **uutils coreutils, grep, find, diff, sed, and ripgrep
-running in WebAssembly**. Package: `shale`. Command: `cmd/shale`.
+A virtual Bash-style shell for Go with **uutils coreutils, grep, find, diff, sed, and ripgrep
+running in WebAssembly**. Package: `bash`. Command: `cmd/go-bash`.
 
 The shell creates its own filesystem layout. Mount ordinary Go `fs.FS` values
 read-only, or use `vfs.WriteFS` for read-write access. Mounts do not need to be at
@@ -21,7 +21,8 @@ read-only, or use `vfs.WriteFS` for read-write access. Mounts do not need to be 
 `PATH` defaults to `/usr/bin:/bin`. The command files expose the actual embedded
 WASM bytes, shared in memory, with mode `0555`. Custom Go commands expose empty
 files with the same mode. These directories are reserved; commands cannot be
-replaced and arbitrary mounted executables are not run.
+replaced. Executable guest files with a sh/bash shebang run through the virtual
+shell; arbitrary native and WASM executables are not run.
 
 ## Try it
 
@@ -29,13 +30,13 @@ Requires Go 1.26 or newer. The checked-in WASM artifact means ordinary Go builds
 need neither Rust nor a system-installed shell or coreutils.
 
 ```sh
-go run ./cmd/shale
-go run ./cmd/shale -c 'pwd; ls /bin'
-go run ./cmd/shale -c 'printf "pear\napple\npear\n" | sort | uniq > result.txt; cat result.txt'
-go run ./cmd/shale -root ./some-directory -readonly -c 'grep -rn TODO . | head -n 5'
-go run ./cmd/shale -root ./some-directory -readonly -c 'rg -n TODO -g "*.go"'
-go run ./cmd/shale -c 'find . -name "*.txt" | xargs sed -i "s/pear/plum/"; diff -u result.txt /dev/null'
-go build ./cmd/shale
+go run ./cmd/go-bash
+go run ./cmd/go-bash -c 'pwd; ls /bin'
+go run ./cmd/go-bash -c 'printf "pear\napple\npear\n" | sort | uniq > result.txt; cat result.txt'
+go run ./cmd/go-bash -root ./some-directory -readonly -c 'grep -rn TODO . | head -n 5'
+go run ./cmd/go-bash -root ./some-directory -readonly -c 'rg -n TODO -g "*.go"'
+go run ./cmd/go-bash -c 'find . -name "*.txt" | xargs sed -i "s/pear/plum/"; diff -u result.txt /dev/null'
+go build ./cmd/go-bash
 ```
 
 The third example **writes `result.txt` in your current host directory**. The
@@ -52,15 +53,15 @@ import (
     "context"
     "fmt"
 
-    shale "github.com/adrianliechti/shale"
-    "github.com/adrianliechti/shale/vfs"
+    bash "github.com/adrianliechti/go-bash"
+    "github.com/adrianliechti/go-bash/vfs"
 )
 
 func main() {
     ctx := context.Background()
     work := vfs.NewMemory(16 << 20)
-    sh, err := shale.New(ctx, shale.Options{
-        Mounts: []shale.Mount{{Path: "/workspace", FS: work}},
+    sh, err := bash.New(ctx, bash.Options{
+        Mounts: []bash.Mount{{Path: "/workspace", FS: work}},
         Cwd: "/workspace",
     })
     if err != nil { panic(err) }
@@ -108,7 +109,8 @@ operations. There is no automatic copy-on-write overlay.
 Sessions retain files, variables, functions, and cwd between calls. Calls on one
 shell are serialized. `Run(ctx, Request{Script: ..., Stdin: ...})` supplies stdin;
 `ReadFile` retrieves a guest file. `Result.Exited` tells interactive callers that
-the script requested `exit`; the API session remains reusable.
+the script terminated the current shell through `exit`, `errexit`, or a fatal
+expansion/assignment error; the API session remains reusable.
 
 ### Custom Go commands
 
@@ -117,9 +119,9 @@ through `PATH`, `/bin`, or `/usr/bin` and supplies expanded arguments, exported
 environment variables, cwd, and redirected streams:
 
 ```go
-sh, err := shale.New(ctx, shale.Options{
-    Commands: map[string]shale.CommandFunc{
-        "hello": func(ctx context.Context, cmd *shale.Command) (int, error) {
+sh, err := bash.New(ctx, bash.Options{
+    Commands: map[string]bash.CommandFunc{
+        "hello": func(ctx context.Context, cmd *bash.Command) (int, error) {
             _, err := fmt.Fprintln(cmd.Stdout, "hello from Go")
             return 0, err
         },
@@ -144,22 +146,24 @@ caller owns handler resources and closes them after closing the shell.
 
 Custom commands cannot replace embedded commands or builtins. `New` copies the
 registration map; `ls /bin` includes the session's custom commands, while
-`shale.Commands()` lists only the embedded inventory.
+`bash.Commands()` lists only the embedded inventory.
 
 [`examples/python`](examples/python) registers virtual `python` and `python3`
 commands using [go-pyodide](https://github.com/adrianliechti/go-pyodide). It shows
 pipelines, script files, arguments, exit codes, and access to shell files. Its
 separate Go module uses the sibling `../go-pyodide` checkout, keeping CPython
-out of ordinary Shale builds. Python reads shell files through its read-only
+out of ordinary go-bash builds. Python reads shell files through its read-only
 mount API; shell redirection saves its output to writable mounts.
 
 ## Compatibility
 
-This is an initial implementation, **not full Bash or a complete POSIX/GNU
-conformance claim**. Shell syntax and expansion come from `mvdan.cc/sh/v3`;
+The compatibility target is **noninteractive Bash 5.3 scripting with GNU-style
+utilities**, within an explicitly mounted virtual filesystem. This is a supported
+subset, not full Bash or a complete POSIX/GNU conformance claim. Shell syntax and
+expansion come from `mvdan.cc/sh/v3`;
 execution is our own Go implementation, not its host-executing interpreter.
 The command implementations come from
-[coreutils 0.11.0](https://github.com/uutils/coreutils/tree/0.11.0),
+[coreutils 0.12.0](https://github.com/uutils/coreutils/tree/0.12.0),
 [grep 0.2.0](https://github.com/uutils/grep/tree/0.2.0),
 [findutils 0.10.0](https://github.com/uutils/findutils/tree/0.10.0),
 [diffutils v0.5.0](https://github.com/uutils/diffutils/tree/v0.5.0),
@@ -170,18 +174,89 @@ local patches applied to diffutils, sed, and ripgrep.
 
 Supported shell features include quoting, variables and exports, parameter and
 arithmetic expansion, command substitution, globs, pipelines, `&&`/`||`, ordinary
-redirects, heredocs, blocks, subshells, functions, `if`, `for`, and `while`/`until`.
-Builtins include `cd`, `pwd`, `export`, `unset`, `exit`, `xargs`, and
-single-level loop control. Nested `sh -c`/`bash -c` use this same limited language.
+redirects, heredocs, here strings, blocks, subshells, functions, `if`, `case`,
+word and arithmetic `for` loops, and `while`/`until`. `case` supports `;;`, `;&`,
+and `;;&`, with quoted patterns treated literally.
+
+`[[ ... ]]` supports short-circuit `&&`/`||`, negation and grouping, strings,
+glob comparisons (`=`, `==`, `!=`), lexical comparisons (`<`, `>`), arithmetic
+comparisons (`-eq`, `-ne`, `-lt`, `-le`, `-gt`, `-ge`), `-z`/`-n`, `-v`, and
+`-o` checks for `errexit`, `nounset`, `xtrace`, and `pipefail`. File predicates
+`-e`/`-a`, `-f`, `-d`, `-s`, `-L`/`-h`, `-nt`,
+and `-ot` operate on the virtual filesystem. Regex matching (`=~`), ownership,
+permission, and other predicates remain unsupported and are rejected before
+the script runs. Negative extended patterns (`!(...)`) are not supported.
+
+Builtins include `cd`, `pwd`, `export`, `unset`, `exit`, `return`, `xargs`, `set`,
+`shift`, `read`, `local`, `declare`, `typeset`, `readonly`, `command`, `type`,
+`which`, `source`/`.`, `eval`, and single-level loop control.
+
+`set -euo pipefail` and separate or combined `-e`, `-u`, and `-x` options work.
+The corresponding named options are `errexit`, `nounset`, and `xtrace`; use `+`
+to disable them. `-e` stops on an unhandled failure, with exceptions for tested
+conditions, nonfinal `&&`/`||` commands, and negation. `-u` rejects unset parameter
+expansions while allowing defaults such as `${name:-fallback}`. `-x` traces
+expanded simple commands and assignments to stderr. `pipefail` makes a pipeline
+return its rightmost nonzero status instead of the final command's status. `set -o` lists
+option states; `set +o` prints commands to restore them. `set -- ...` and
+`shift [N]` manage positional arguments. Options and arguments persist between
+API calls and are copied into subshells. Command substitutions clear `-e`, as
+Bash does by default.
+
+`local` creates function-scoped variables with Bash-style dynamic scope: called
+functions see the caller's locals, and values and attributes are restored on
+return. `declare` and `typeset` create locals inside functions and globals
+otherwise; `-g` explicitly selects the global binding. Scalar declarations
+support `-r` (readonly), `-x`/`+x` (export/unexport), and `-p` (inspect).
+`readonly` prevents reassignment and unsetting, and `export -n` removes export
+status. Array, integer, and nameref declaration flags remain unsupported.
+
+`command -v`/`-V` and `type` identify functions, builtins, keywords, and PATH
+commands; `type -t`, `-p`, `-P`, `-a`, and `-f` are supported. `which [-a]`
+searches PATH for executable files. All lookup uses the virtual filesystem.
+`command NAME ...` skips functions, and `command -p` uses `/usr/bin:/bin`.
+
+`source FILE [ARGS ...]` and `. FILE [ARGS ...]` parse and run a guest file in
+the current shell, retaining variable, function, option, and cwd changes.
+Sourcing searches PATH, then cwd, and does not require execute bits. Supplied
+arguments temporarily replace positional arguments; `return` ends the sourced
+file. `eval [ARG ...]` joins its arguments and parses them in the current shell.
+Both share the caller's execution and recursion limits.
+
+`./script.sh` and scripts found through PATH require executable file modes and a
+sh/bash shebang, including `#!/usr/bin/env bash` and `#!/usr/bin/env -S bash -eu`.
+They run in a fresh virtual child shell with exported variables, cwd, stdin,
+and arguments. `sh FILE`/`bash FILE` also run readable scripts without execute
+bits or a shebang; `sh -c SCRIPT [NAME [ARGS ...]]`, `bash -c`, and scripts on
+stdin are supported. Child shells start with default options unless explicitly
+passed options such as `-eu`; they use this same supported language subset.
+
+`read [-r] [-d DELIM] [NAME ...]` reads stdin without consuming subsequent lines,
+supports IFS splitting and backslash continuations, and assigns `REPLY` when no
+names are supplied. `-r` preserves backslashes and `-d ''` reads NUL-delimited
+records. At EOF it assigns any partial line and returns status 1. For example:
+
+```sh
+set -o pipefail
+for ((i=0; i<3; i++)); do printf '%s\n' "$i"; done |
+  while IFS= read -r line; do
+    case "$line" in
+      0) printf 'zero\n' ;;
+      *) [[ "$line" -gt 0 ]] && printf 'positive: %s\n' "$line" ;;
+    esac
+  done
+```
 
 Not yet supported: job control/background jobs, process substitution, arrays,
-`[[ ... ]]`, `case`, C-style loops, arbitrary file descriptors, `source`, `eval`,
-shell options such as `set -e`/`pipefail`, external scripts, or arbitrary native
-or WASM executables. Unsupported constructs return an error.
+arbitrary file descriptors, traps, aliases, shell options beyond the four above,
+or arbitrary native or WASM executables. Bare variable names in arithmetic
+still use the expansion library's zero-default behavior, including under `-u`.
+Unsupported syntax returns an error; unsupported builtin options return a
+nonzero status.
 
-The pinned coreutils `feat_wasm` build contains 77 utilities; `coreutils --list`
+The pinned coreutils `feat_wasm` build contains 79 utilities; `coreutils --list`
 prints them. The separate modules add `grep`, `find`, `diff`, `cmp`, `sed`, and `rg`.
-`shale.Commands()` lists the embedded commands and `shale.Versions()` the pinned
+`bash.Commands()` lists the embedded commands and `bash.Versions()` the pinned
 releases. Not all native coreutils are available in the WASI build (for
 example, `chmod` and `stat` are absent), and `awk` is absent because the uutils
 implementation has no release yet.
@@ -189,7 +264,7 @@ implementation has no release yet.
 `rg` supports recursive searches, ignore rules, globs, `--files`, `--json`, and
 piped input. Its WASI build always runs on one thread, including when `-j` is
 supplied. PCRE2 (`-P`) is not compiled in, and subprocess-based features such
-as `--pre` and compressed-file searches (`-z`) are unavailable. Shale supplies
+as `--pre` and compressed-file searches (`-z`) are unavailable. go-bash supplies
 stdin state so `rg pattern` searches cwd by default and reads stdin when piped
 or redirected. Use `rg pattern -` to explicitly select even an empty stdin.
 
@@ -264,8 +339,13 @@ fixed Bash differential cases, 3,600 randomized filesystem operations (with
 documented Go/POSIX differences excluded), open-inode lifetime checks, writeback
 failure injection, queued deadlines, concurrent session calls, and integer-limit
 boundaries. Fixed fixtures may run against an installed Bash in temporary
-directories; generated scripts never run on the host. These are our regression
-tests, not a run of the full upstream GNU compatibility suite.
+directories; generated scripts never run on the host. The
+[Bash 5.3 upstream fixtures](testdata/bash-5.3/README.md) port selected GNU Bash
+tests with source attribution and pinned stdout, stderr, and exit status.
+Known compatibility gaps are reported as skips; `BASH_TEST_STRICT=1` makes them
+fail for implementation work. Set `BASH_TEST_BINARY=/path/to/bash-5.3` to check
+expectations against a specific Bash 5.3 build. Pinned checks still run when the
+system Bash is older (for example, macOS's Bash 3.2) or unavailable.
 
 The fuzz targets cover parsing, virtual execution, and memory-filesystem state
 transitions. Crashing inputs are retained in `testdata/fuzz` and replay during

@@ -1,4 +1,4 @@
-package shale_test
+package bash_test
 
 import (
 	"encoding/json"
@@ -6,11 +6,11 @@ import (
 	"testing"
 	"testing/fstest"
 
-	shale "github.com/adrianliechti/shale"
+	bash "github.com/adrianliechti/go-bash"
 )
 
 func TestRipgrep(t *testing.T) {
-	b := newShell(t, shale.Options{Mounts: []shale.Mount{{Path: "/project", FS: fstest.MapFS{
+	b := newShell(t, bash.Options{Mounts: []bash.Mount{{Path: "/project", FS: fstest.MapFS{
 		".git/HEAD":       {Data: []byte("ref: refs/heads/main\n")},
 		".gitignore":      {Data: []byte("ignored.txt\n")},
 		".hidden.txt":     {Data: []byte("hidden\n")},
@@ -45,8 +45,8 @@ func TestRipgrep(t *testing.T) {
 		{"here string", "rg pear <<< pear", "pear\n", 0},
 		{"substitution stdin", "printf 'pear\n' | echo \"$(rg pear)\"", "pear\n", 0},
 		{"nested shell stdin", "printf 'pear\n' | sh -c 'rg pear'", "pear\n", 0},
-		{"stdin cannot spoof cwd search", "SHALE_STDIN=true SHALE_CWD=/tmp rg -l pear", "visible.txt\n", 0},
-		{"stdin cannot spoof pipe", "printf 'pear\n' | SHALE_STDIN=false rg pear", "pear\n", 0},
+		{"stdin cannot spoof cwd search", "BASH_STDIN=true BASH_CWD=/tmp rg -l pear", "visible.txt\n", 0},
+		{"stdin cannot spoof pipe", "printf 'pear\n' | BASH_STDIN=false rg pear", "pear\n", 0},
 		{"thread option stays sequential", "rg -j 8 -l pear", "visible.txt\n", 0},
 		{"xargs", "printf 'pear\n' | xargs rg -l", "visible.txt\n", 0},
 		{"memory files", "echo pear > /work/fruit; rg -l pear /work", "/work/fruit\n", 0},
@@ -61,7 +61,7 @@ func TestRipgrep(t *testing.T) {
 		})
 	}
 
-	r, err := b.Run(t.Context(), shale.Request{Script: "rg pear", Stdin: "pear\napple\n"})
+	r, err := b.Run(t.Context(), bash.Request{Script: "rg pear", Stdin: "pear\napple\n"})
 	if err != nil || r.ExitCode != 0 || r.Stdout != "pear\n" {
 		t.Fatalf("request stdin: %#v, %v", r, err)
 	}

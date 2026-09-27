@@ -1,4 +1,4 @@
-package shale
+package bash
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/adrianliechti/shale/internal/fsys"
-	"github.com/adrianliechti/shale/vfs"
+	"github.com/adrianliechti/go-bash/internal/fsys"
+	"github.com/adrianliechti/go-bash/vfs"
 )
 
 // CommandFunc implements a virtual command. Return a nonzero exit code and nil

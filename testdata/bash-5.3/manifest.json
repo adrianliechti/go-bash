@@ -1,0 +1,149 @@
+[
+  {
+    "name": "case-fallthrough",
+    "source": "case.tests",
+    "lines": "14-38",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "case-patterns",
+    "source": "case.tests",
+    "lines": "45-76",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "case-quoting",
+    "source": "case1.sub",
+    "lines": "14-61, 69-72",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "arithmetic-for",
+    "source": "arith-for.tests",
+    "lines": "14-55, 68-84, 87, 104-109, 126-129",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "arithmetic-for-quoted",
+    "source": "arith-for.tests",
+    "lines": "57-66",
+    "exit_code": 0,
+    "stderr": "",
+    "known_failure": "Quoted arithmetic conditions evaluate to zero instead of evaluating their contents."
+  },
+  {
+    "name": "conditional-logic",
+    "source": "cond.tests",
+    "lines": "18, 24-31, 36-62, 68-88, 146-154, 173-187, 229-241",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "conditional-arithmetic",
+    "source": "cond.tests",
+    "lines": "112-125, 129-144",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "read-words",
+    "source": "read.tests",
+    "lines": "14-18, 21-27",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "read-files",
+    "source": "read.tests",
+    "lines": "45-81",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "read-delimiters",
+    "source": "read1.sub",
+    "lines": "14-19",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "read-ifs-whitespace",
+    "source": "read9.sub",
+    "lines": "complete file",
+    "exit_code": 0,
+    "stderr": "",
+    "known_failure": "read fails to trim trailing IFS characters when IFS contains tab, carriage return, form feed, and vertical tab."
+  },
+  {
+    "name": "read-ifs-assignment",
+    "source": "read10.sub",
+    "lines": "complete file",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "here-strings",
+    "source": "herestr.tests",
+    "lines": "20-67, 71-75",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "here-documents",
+    "source": "heredoc.tests",
+    "lines": "14-48, 64-94, 107-134, 174-176",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "invert",
+    "source": "invert.tests",
+    "lines": "complete file",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "case-escaped-word",
+    "source": "case1.sub",
+    "lines": "63-67, 74-77",
+    "exit_code": 0,
+    "stderr": "",
+    "known_failure": "An unquoted backslash in the case word is retained instead of removed."
+  },
+  {
+    "name": "conditional-negation",
+    "source": "cond.tests",
+    "lines": "32-34",
+    "exit_code": 0,
+    "stderr": "",
+    "known_failure": "In [[ ! x || x ]], ! incorrectly negates the full expression instead of the first term."
+  },
+  {
+    "name": "read-escaped-trailing-space",
+    "source": "read.tests",
+    "lines": "19",
+    "exit_code": 0,
+    "stderr": "",
+    "known_failure": "read with one variable retains the escaped trailing IFS space in this multiword input."
+  },
+  {
+    "name": "read-delimiter-short-consumer",
+    "source": "read1.sub",
+    "lines": "21-35",
+    "exit_code": 0,
+    "stderr": "",
+    "known_failure": "An early-closing read -d consumer can cause spurious echo I/O diagnostics from the pipeline producer."
+  },
+  {
+    "name": "here-document-delimiter-continuation",
+    "source": "heredoc.tests",
+    "lines": "95-105",
+    "exit_code": 0,
+    "stderr": "",
+    "known_failure": "Backslash-newline folding in a here-document delimiter consumes subsequent script text."
+  }
+]

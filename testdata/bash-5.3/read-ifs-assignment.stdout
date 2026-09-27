@@ -1,0 +1,3 @@
+IFS=[,] var=[abc] rest=[def,ghi]
+IFS=[] var=[abc] rest=[def,ghi]
+IFS=[ ] var=[  abc] rest=[def,ghi ]

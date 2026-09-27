@@ -1,4 +1,4 @@
-package shale_test
+package bash_test
 
 import (
 	"bytes"
@@ -6,23 +6,24 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	shale "github.com/adrianliechti/shale"
+	bash "github.com/adrianliechti/go-bash"
 )
 
 // This oracle only executes these fixed, reviewed fixtures in a fresh temporary
 // directory. It never passes fuzzed or user-provided scripts to the host shell.
 // Expected results are pinned as well, so coverage remains when Bash is absent.
+type bashTestCase struct {
+	name, script, want string
+	code               int
+}
+
 func TestBashDifferential(t *testing.T) {
-	b := newShell(t, shale.Options{})
-	bash, _ := exec.LookPath("bash")
-	for _, tc := range []struct {
-		name, script, want string
-		code               int
-	}{
+	testBashDifferential(t, []bashTestCase{
 		{"prefix builtin state", `mkdir prefix_cd; X=temp cd prefix_cd; printf '%s:%s\n' "${PWD##*/}" "${X-unset}"`, "prefix_cd:unset\n", 0},
 		{"prefix function state", `f() { y=changed; X=inside; }; X=outer; X=temp f; printf '%s:%s\n' "$X" "$y"`, "outer:changed\n", 0},
 		{"prefix expansion", `X=before; X=after printf '%s\n' "$X"; printf '%s\n' "$X"`, "before\nbefore\n", 0},
@@ -59,18 +60,54 @@ func TestBashDifferential(t *testing.T) {
 		{"negation", `! true; printf '%s\n' "$?"; ! false; printf '%s\n' "$?"`, "1\n0\n", 0},
 		{"export after assignment", `x=one; export x; x=two; printenv x`, "two\n", 0},
 		{"export empty declaration", `export empty; empty=value; printenv empty`, "value\n", 0},
-		{"cd empty", `cd ''; printf '%s\n' "$?"`, "0\n", 0},
+		{"cd empty", `cd ''; printf '%s\n' "$?"`, "1\n", 0},
 		{"fd left to right", `{ printf out; printf err >&2; } 2>&1 > fd_file; cat fd_file`, "errout", 0},
 		{"fd both to file", `{ printf out; printf err >&2; } > fd_both 2>&1; cat fd_both`, "outerr", 0},
 		{"quoted delimiter", "x=expanded; cat <<'EOF'\n$x\nEOF", "$x\n", 0},
 		{"tabs from heredoc expansion", "x='\tkeep'; cat <<-EOF\n\t$x\n\tEOF", "\tkeep\n", 0},
-	} {
+	}, 3)
+}
+
+func testBashDifferential(t *testing.T, cases []bashTestCase, minVersion int) {
+	b := newShell(t, bash.Options{})
+	oracle := os.Getenv("BASH_TEST_BINARY")
+	if oracle == "" {
+		oracle, _ = exec.LookPath("bash")
+	}
+	version := 0
+	if oracle != "" {
+		out, err := exec.Command(oracle, "--noprofile", "--norc", "-c", `printf '%s.%s' "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"`).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts := strings.Split(string(out), ".")
+		if len(parts) != 2 {
+			t.Fatalf("invalid Bash version: %q", out)
+		}
+		major, err := strconv.Atoi(parts[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		minor, err := strconv.Atoi(parts[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		version = major*100 + minor
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			script := "(\n" + tc.script + "\n)"
-			if bash != "" && tc.name != "pipe stderr order" { // |& requires Bash 4; macOS ships Bash 3.
+			required := minVersion * 100
+			if tc.name == "pipe stderr order" {
+				required = 400
+			}
+			if tc.name == "cd empty" { // Bash 5.3 rejects an empty directory name.
+				required = 503
+			}
+			if oracle != "" && version >= required {
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
-				cmd := exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-c", script)
+				cmd := exec.CommandContext(ctx, oracle, "--noprofile", "--norc", "-c", script)
 				cmd.Dir = t.TempDir()
 				cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/work", "LC_ALL=C", "TZ=UTC"}
 				var stdout, stderr bytes.Buffer
@@ -88,6 +125,8 @@ func TestBashDifferential(t *testing.T) {
 				if stdout.String() != tc.want || code != tc.code {
 					t.Fatalf("incorrect oracle fixture: stdout %q, stderr %q, code %d; want %q/%d", stdout.String(), stderr.String(), code, tc.want, tc.code)
 				}
+			} else {
+				t.Logf("Bash %d.%d+ unavailable; checking pinned expected results", required/100, required%100)
 			}
 			r, err := b.Exec(t.Context(), script)
 			if err != nil || r.Stdout != tc.want || r.ExitCode != tc.code || r.Exited {
@@ -98,8 +137,8 @@ func TestBashDifferential(t *testing.T) {
 }
 
 func TestRejectedSyntaxHasNoSideEffects(t *testing.T) {
-	b := newShell(t, shale.Options{})
-	for _, unsupported := range []string{`cat 0>bad`, `cat 1<input`, `cat 2<<<x`, `cat 0<&1`, `cat >ok 1<>rw`, `cat >ok {fd}>dynamic`, `x=(a b)`, `[[ true ]]`, `echo <(echo x)`, `echo hi &`, `() ((A000))`} {
+	b := newShell(t, bash.Options{})
+	for _, unsupported := range []string{`cat 0>bad`, `cat 1<input`, `cat 2<<<x`, `cat 0<&1`, `cat >ok 1<>rw`, `cat >ok {fd}>dynamic`, `x=(a b)`, `[[ x =~ x ]]`, `[[ -O /work ]]`, `echo <(echo x)`, `echo hi &`, `() ((A000))`} {
 		t.Run(unsupported, func(t *testing.T) {
 			r, err := b.Exec(t.Context(), `printf bad > sentinel; `+unsupported)
 			if err == nil || r.ExitCode != 2 {
@@ -113,7 +152,7 @@ func TestRejectedSyntaxHasNoSideEffects(t *testing.T) {
 }
 
 func TestLargeExpansionFailsWithoutHostPanic(t *testing.T) {
-	b := newShell(t, shale.Options{Timeout: 2 * time.Second})
+	b := newShell(t, bash.Options{Timeout: 2 * time.Second})
 	for _, script := range []string{
 		`echo {1..1000000000}`,
 		`x=x; for n in {1..24}; do x=$x$x; done`,
@@ -122,7 +161,7 @@ func TestLargeExpansionFailsWithoutHostPanic(t *testing.T) {
 		strings.Repeat("( ", 200) + ":" + strings.Repeat(" )", 200),
 	} {
 		_, err := b.Exec(t.Context(), script)
-		if !errors.Is(err, shale.ErrExecutionLimit) {
+		if !errors.Is(err, bash.ErrExecutionLimit) {
 			t.Errorf("expected execution limit for %.80q: %v", script, err)
 		}
 	}

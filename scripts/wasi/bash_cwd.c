@@ -1,13 +1,13 @@
 // Linked into every embedded WASI command. WASI libc starts at "/" and has no
 // way to seed its emulated working directory from the host, so this constructor
-// runs before main and changes to the directory named by SHALE_CWD, which the Go
+// runs before main and changes to the directory named by BASH_CWD, which the Go
 // host sets on every invocation. It replaces a per-project launcher patch.
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-__attribute__((constructor(200))) static void shale_cwd(void) {
-	const char *cwd = getenv("SHALE_CWD");
+__attribute__((constructor(200))) static void bash_cwd(void) {
+	const char *cwd = getenv("BASH_CWD");
 	if (cwd == NULL || *cwd == '\0') {
 		return;
 	}
