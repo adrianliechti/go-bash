@@ -38,6 +38,19 @@ type Command struct {
 
 type commandFS struct{ ns *fsys.Namespace }
 
+type maskedCommandFS struct {
+	commandFS
+	mask fs.FileMode
+}
+
+func (f maskedCommandFS) OpenFile(name string, flag int, perm fs.FileMode) (vfs.File, error) {
+	return f.commandFS.OpenFile(name, flag, perm&^f.mask)
+}
+
+func (f maskedCommandFS) Mkdir(name string, perm fs.FileMode) error {
+	return f.commandFS.Mkdir(name, perm&^f.mask)
+}
+
 func (f commandFS) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}

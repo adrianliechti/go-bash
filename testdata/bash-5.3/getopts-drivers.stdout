@@ -1,0 +1,15 @@
+-a specified
+-b bval specified
+remaining args: one two three
+-a specified
+-b bval specified
+remaining args: one two three
+-a specified
+-b bval specified
+remaining args: one two three
+./getopts4.sub: error: option `b' requires an argument
+Usage: ./getopts4.sub [-a] [-b value] args
+./getopts4.sub: error: illegal option character `c'
+Usage: ./getopts4.sub [-a] [-b value] args
+-a specified
+remaining args: -b bval one two three

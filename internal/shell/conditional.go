@@ -29,7 +29,7 @@ func (s *Shell) forLoop(r *run, c *syntax.ForClause, streams IO) (int, error) {
 	case *syntax.CStyleLoop:
 		arithmetic = loop
 		if loop.Init != nil {
-			if _, err := expand.Arithm(s.config(r, streams), loop.Init); err != nil {
+			if _, err := s.arithmetic(r, loop.Init, streams); err != nil {
 				return 1, err
 			}
 		}
@@ -41,7 +41,7 @@ func (s *Shell) forLoop(r *run, c *syntax.ForClause, streams IO) (int, error) {
 		}
 		if arithmetic != nil {
 			if arithmetic.Cond != nil {
-				n, err := expand.Arithm(s.config(r, streams), arithmetic.Cond)
+				n, err := s.arithmetic(r, arithmetic.Cond, streams)
 				if err != nil {
 					return 1, err
 				}
@@ -67,7 +67,7 @@ func (s *Shell) forLoop(r *run, c *syntax.ForClause, streams IO) (int, error) {
 			return code, err
 		}
 		if arithmetic != nil && arithmetic.Post != nil {
-			if _, err := expand.Arithm(s.config(r, streams), arithmetic.Post); err != nil {
+			if _, err := s.arithmetic(r, arithmetic.Post, streams); err != nil {
 				return 1, err
 			}
 		}
@@ -99,22 +99,37 @@ func quoteLiteralEscapes(word *syntax.Word) *syntax.Word {
 			copyWord.Parts = append(copyWord.Parts, part)
 			continue
 		}
-		value := lit.Value
-		for {
-			i := strings.IndexByte(value, '\\')
-			if i < 0 || i+1 == len(value) {
-				break
+		first := strings.IndexByte(lit.Value, '\\')
+		prefix := *lit
+		prefix.Value = lit.Value[:first]
+		var quoted strings.Builder
+		for i := first; i < len(lit.Value); i++ {
+			if lit.Value[i] == '\\' && i+1 < len(lit.Value) {
+				i++
 			}
-			prefix := *lit
-			prefix.Value = value[:i]
-			copyWord.Parts = append(copyWord.Parts, &prefix, &syntax.SglQuoted{Value: value[i+1 : i+2]})
-			value = value[i+2:]
+			quoted.WriteByte(lit.Value[i])
 		}
-		suffix := *lit
-		suffix.Value = value
-		copyWord.Parts = append(copyWord.Parts, &suffix)
+		copyWord.Parts = append(copyWord.Parts, &prefix, &syntax.SglQuoted{Value: quoted.String()})
 	}
 	return &copyWord
+}
+
+// A whole quoted or expanded arithmetic expression is still an expression,
+// not a numeric string. In particular this occurs in C-style for clauses.
+func (s *Shell) arithmetic(r *run, expr syntax.ArithmExpr, streams IO) (int, error) {
+	if word, ok := expr.(*syntax.Word); ok && word.Lit() == "" {
+		for _, part := range word.Parts {
+			if _, single := part.(*syntax.SglQuoted); single {
+				return 0, errors.New("single quotes are invalid in arithmetic")
+			}
+		}
+		value, err := s.literal(r, word, streams)
+		if err != nil {
+			return 0, err
+		}
+		return s.testArithmetic(r, value, streams)
+	}
+	return expand.Arithm(s.config(r, streams), expr)
 }
 
 func (s *Shell) match(r *run, word *syntax.Word, value string, streams IO) (bool, error) {
@@ -290,6 +305,14 @@ func (s *Shell) testExpr(r *run, expr syntax.TestExpr, streams IO) (int, error) 
 }
 
 func (s *Shell) testArithmetic(r *run, value string, streams IO) (int, error) {
+	if s.depth >= 64 {
+		return 0, ErrLimit
+	}
+	if err := r.step(); err != nil {
+		return 0, err
+	}
+	s.depth++
+	defer func() { s.depth-- }()
 	if strings.TrimSpace(value) == "" {
 		return 0, nil
 	}
@@ -301,7 +324,7 @@ func (s *Shell) testArithmetic(r *run, value string, streams IO) (int, error) {
 	}
 	if len(f.Stmts) == 1 && len(f.Stmts[0].Redirs) == 0 {
 		if cmd, ok := f.Stmts[0].Cmd.(*syntax.ArithmCmd); ok {
-			return expand.Arithm(s.config(r, streams), cmd.X)
+			return s.arithmetic(r, cmd.X, streams)
 		}
 	}
 	return 0, errors.New("invalid conditional arithmetic expression")

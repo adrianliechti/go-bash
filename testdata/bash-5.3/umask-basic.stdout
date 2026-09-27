@@ -1,0 +1,7 @@
+0022
+u=rwx,g=rx,o=rx
+0002
+u=rwx,g=rwx,o=rx
+umask 0002
+umask -S u=rwx,g=rwx,o=rx
+u=rwx,g=rwx,o=rwx

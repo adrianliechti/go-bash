@@ -138,7 +138,7 @@ func testBashDifferential(t *testing.T, cases []bashTestCase, minVersion int) {
 
 func TestRejectedSyntaxHasNoSideEffects(t *testing.T) {
 	b := newShell(t, bash.Options{})
-	for _, unsupported := range []string{`cat 0>bad`, `cat 1<input`, `cat 2<<<x`, `cat 0<&1`, `cat >ok 1<>rw`, `cat >ok {fd}>dynamic`, `x=(a b)`, `[[ x =~ x ]]`, `[[ -O /work ]]`, `echo <(echo x)`, `echo hi &`, `() ((A000))`} {
+	for _, unsupported := range []string{`cat 10>bad`, `cat 100<input`, `cat 12<<<x`, `cat 20<&1`, `cat >ok 11<>rw`, `cat >ok {fd}>dynamic`, `x=(a b)`, `[[ x =~ x ]]`, `[[ -O /work ]]`, `echo <(echo x)`, `echo hi &`, `() ((A000))`} {
 		t.Run(unsupported, func(t *testing.T) {
 			r, err := b.Exec(t.Context(), `printf bad > sentinel; `+unsupported)
 			if err == nil || r.ExitCode != 2 {

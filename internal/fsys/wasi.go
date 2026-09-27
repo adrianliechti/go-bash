@@ -17,8 +17,9 @@ import (
 // The working directory is per command; no process-wide chdir is involved.
 type WASI struct {
 	ws.UnimplementedFS
-	NS  *Namespace
-	Cwd string
+	NS    *Namespace
+	Cwd   string
+	Umask fs.FileMode
 }
 
 func (w *WASI) name(p string) string { return Resolve(w.Cwd, p) }
@@ -53,7 +54,7 @@ func (w *WASI) OpenFile(p string, flag ws.Oflag, perm fs.FileMode) (ws.File, ws.
 			of |= pair.g
 		}
 	}
-	f, err := w.NS.Open(w.name(p), of, perm)
+	f, err := w.NS.Open(w.name(p), of, perm&^w.Umask)
 	if err != nil {
 		return nil, errno(err)
 	}
@@ -88,7 +89,9 @@ func (w *WASI) Readlink(p string) (string, ws.Errno) {
 	v, e := w.NS.Readlink(w.name(p))
 	return v, errno(e)
 }
-func (w *WASI) Mkdir(p string, perm fs.FileMode) ws.Errno { return errno(w.NS.Mkdir(w.name(p), perm)) }
+func (w *WASI) Mkdir(p string, perm fs.FileMode) ws.Errno {
+	return errno(w.NS.Mkdir(w.name(p), perm&^w.Umask))
+}
 func (w *WASI) Unlink(p string) ws.Errno                  { return errno(w.NS.Remove(w.name(p), false)) }
 func (w *WASI) Rmdir(p string) ws.Errno                   { return errno(w.NS.Remove(w.name(p), true)) }
 func (w *WASI) Rename(a, b string) ws.Errno               { return errno(w.NS.Rename(w.name(a), w.name(b))) }

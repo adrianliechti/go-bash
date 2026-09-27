@@ -93,9 +93,15 @@ func (s *Shell) source(r *run, args []string, streams IO) (int, error) {
 		return 1, nil
 	}
 	if len(args) > 1 {
-		old := s.args
+		old, generation := s.args, s.argsGeneration
 		s.args = append([]string(nil), args[1:]...)
-		defer func() { s.args = old }()
+		defer func() {
+			// Bash restores source arguments after shift, but preserves an
+			// explicit set of new positional parameters by the sourced file.
+			if s.argsGeneration == generation {
+				s.args = old
+			}
+		}()
 	}
 	s.sourceDepth++
 	s.traceDepth++
@@ -111,11 +117,14 @@ func (s *Shell) source(r *run, args []string, streams IO) (int, error) {
 func (s *Shell) childShell() *Shell {
 	child := New(s.FS, s.Cwd, s.exported(), s.Exec)
 	child.depth = s.depth + 1
+	child.umask = s.umask
+	child.inheritDescriptors(s)
 	return child
 }
 
 func (s *Shell) runChild(r *run, child *Shell, src string, streams IO) (int, error) {
 	code, err := child.runText(r, src, streams)
+	code, err = child.finish(r, code, err)
 	var control flow
 	if errors.As(err, &control) && control.terminates() {
 		err = nil
@@ -123,8 +132,9 @@ func (s *Shell) runChild(r *run, child *Shell, src string, streams IO) (int, err
 	return code, err
 }
 
-func (s *Shell) nestedShell(r *run, args []string, streams IO) (int, error) {
+func (s *Shell) nestedShell(r *run, args []string, streams IO) (code int, err error) {
 	child := s.childShell()
+	defer child.closeResult(&code, &err)
 	child.vars["0"] = variable(args[0], false)
 	args = args[1:]
 	command := false
@@ -150,7 +160,6 @@ func (s *Shell) nestedShell(r *run, args []string, streams IO) (int, error) {
 		}
 	}
 	var src string
-	var err error
 	switch {
 	case command:
 		if len(args) == 0 {
@@ -185,7 +194,7 @@ func (s *Shell) nestedShell(r *run, args []string, streams IO) (int, error) {
 	return s.runChild(r, child, src, streams)
 }
 
-func (s *Shell) script(r *run, name string, args []string, streams IO) (int, error) {
+func (s *Shell) script(r *run, name string, args []string, streams IO) (code int, err error) {
 	src, err := s.readScript(name)
 	if err != nil {
 		if errors.Is(err, ErrLimit) {
@@ -207,6 +216,7 @@ func (s *Shell) script(r *run, name string, args []string, streams IO) (int, err
 		return 126, nil
 	}
 	child := s.childShell()
+	defer child.closeResult(&code, &err)
 	if len(interpreter) > 1 {
 		if code, err := child.set(interpreter[1:], streams); code != 0 || err != nil {
 			return code, err

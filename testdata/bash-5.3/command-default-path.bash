@@ -1,0 +1,40 @@
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Ported from GNU Bash 5.3 tests/exec10.sub, lines 14-37.
+# Selected 2026-09-27; commands in the excerpts are unchanged.
+
+# post bash-4.3 changes to how command -p works (avoid modifying $PATH)
+
+: ${TMPDIR=/tmp}
+xpath=/usr/local/bin:/usr/GNU/bin:/usr/bin:/bin:.
+
+# set a value of PATH we can test for; versions of bash up to and including
+# bash-4.3 would set $PATH while running command -p
+PATH=$xpath
+export PATH
+command -p sh -c 'echo $PATH'
+
+PATH=${TMPDIR}
+command -pv cat	>/dev/null || echo "cannot find cat using standard path"
+command -p cat < /dev/null
+#hash
+
+PATH=$xpath
+command -pv cat >/dev/null || echo "cannot find cat using xpath"
+PATH=$TMPDIR command -pv cat >/dev/null || echo "cannot find cat using standard path with PATH=\$TMPDIR"
+PATH= command -pv cat >/dev/null || echo "cannot find cat using standard path with empty \$PATH"
+PATH=$TMPDIR command -v cat >/dev/null || echo "cannot find cat in \$TMPDIR"
+PATH= command -v cat >/dev/null || echo "cannot find cat with empty \$PATH"
+
+echo PATH = $PATH

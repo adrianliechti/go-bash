@@ -1,9 +1,11 @@
 # GNU Bash 5.3 regression fixtures
 
-These 20 fixture groups port selected tests from 11 files in the GNU Bash 5.3.0
-release. They cover `case` matching and fallthrough, arithmetic `for` loops,
-`[[ ]]` logic and arithmetic, `read` splitting and delimiters, here-strings,
-here-documents, and pipeline status inversion.
+These 42 fixture groups port selected tests from 31 primary files in the GNU
+Bash 5.3.0 release, plus seven unchanged helper scripts in `support/`. They cover
+`case`, arithmetic loops, `[[ ]]`, `read`, heredocs, pipeline status, shell options,
+function declarations and scope, command discovery, source/eval, empty positional
+arguments, `getopts`, `umask`, EXIT traps, and persistent descriptor redirections.
+All 42 groups pass; the seven gaps recorded by the initial port are fixed.
 
 The source is the official [bash-5.3.tar.gz release archive](https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz):
 
@@ -12,11 +14,12 @@ SHA-256: 0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba
 ```
 
 [manifest.json](manifest.json) records each upstream filename and the original,
-one-based source line ranges. `invert.bash`, `read-ifs-whitespace.bash`, and
-`read-ifs-assignment.bash` are complete, unchanged upstream files. The other
-scripts concatenate the listed excerpts, retaining the upstream license header
-and adding a provenance comment. The excerpts were selected on 2026-09-27;
-commands within the selected ranges are unchanged.
+one-based source line ranges. Entries marked “complete file” are unchanged.
+Excerpts retain any upstream license header and add a provenance comment. The
+excerpts were selected on 2026-09-27; commands within the selected ranges are
+unchanged. `support_files` lists complete upstream scripts used by a fixture.
+The harness supplies `THIS_SH` as the selected native Bash binary or the virtual
+`bash` builtin, allowing upstream child-shell invocations to run unmodified.
 
 The scripts retain GNU Bash's GPL-3.0-or-later licensing. Upstream's
 [COPYRIGHT](COPYRIGHT) notice and [COPYING](COPYING) license are included here.
@@ -53,46 +56,30 @@ directory with startup files disabled and a fixed environment: `LC_ALL=C`,
 locale, timezone, home, and temporary-directory settings with its virtual PATH.
 Only the reviewed, checked-in scripts are executed on the host.
 
-## Known compatibility gaps
+## Coverage and boundaries
 
-Thirteen fixture groups currently pass. Seven expose existing differences,
-recorded by `known_failure` in the manifest. They still execute: a mismatch is
-reported as a skip in the default suite, and a matching result is reported as a
-pass. The Bash oracle must match the expected results even for known failures.
+The original seven failing groups now pass without `known_failure` annotations:
+quoted arithmetic loop expressions, escaped case words, conditional negation,
+two `read` whitespace cases, early-closing pipeline consumers, and continued
+heredoc delimiters. Neighboring cases also have differential Go tests.
 
-Use strict mode to turn every remaining difference into a test failure:
+The added groups exercise `set -e` contexts and child scripts, `set -x` assignments,
+`set -u` with empty arguments, function scope restoration, scalar readonly and
+`declare -g`, `command -v`/`-V`/`-p`, source arguments/return, eval expansion,
+getopts cursors and nested functions, numeric/symbolic umask, EXIT trap status,
+and descriptor duplication/closing with persistent exec redirections.
 
-```sh
-BASH_TEST_STRICT=1 go test -run '^TestBash53Upstream$' -v .
-# Run just one reproduction while implementing its fix:
-BASH_TEST_STRICT=1 go test -run '^TestBash53Upstream/conditional-negation$' -v .
-```
+This is a selected suite. Arrays, terminal/job control, signals, regex matching,
+full POSIX mode, descriptors above 9, and exact error-message formatting remain
+outside these excerpts. The source fixture omits `cp /dev/null`, which the current
+WASI coreutils build rejects; an independent Go regression covers sourcing an
+empty file. Complex mixtures of empty expansions and quoted `$@` also remain
+outside the selected direct-empty-argument cases. Shebang dispatch, virtual PATH,
+combined/named shell options, readonly errors, and resource limits have separate
+Go regression tests because their setup or diagnostics depend on this runtime.
 
-| Fixture | Difference observed in go-bash |
-| --- | --- |
-| `arithmetic-for-quoted` | A quoted arithmetic condition evaluates to zero instead of evaluating its contents. |
-| `case-escaped-word` | A backslash in an unquoted `case` word survives quote removal. |
-| `conditional-negation` | `[[ ! x \|\| x ]]` negates the full expression instead of its first term. |
-| `read-escaped-trailing-space` | `read` retains the escaped trailing IFS space in the upstream multiword example. |
-| `read-ifs-whitespace` | `read` leaves trailing delimiters when IFS contains tab, carriage return, form feed, and vertical tab. |
-| `read-delimiter-short-consumer` | An early-closing `read -d` consumer can produce spurious `echo: I/O error` diagnostics. |
-| `here-document-delimiter-continuation` | Backslash-newline folding in a delimiter consumes subsequent script text. |
-
-After a fix, run its fixture in strict mode and remove its `known_failure`
-annotation. Keep the Bash expectations unchanged. Executor fixes belong in the
-separate shell implementation work; this port adds fixtures and a runner.
-
-## Scope and further ports
-
-The full upstream suite also covers arrays, regular expressions and
-`BASH_REMATCH`, shell options, terminal and job control, extended file
-descriptors, locale-specific behavior, and exact diagnostic formatting. Those
-areas remain outside this initial selection. Driver invocations of `${THIS_SH}`
-and external test helpers such as `recho` are omitted. Function-printing checks
-(`type`/`typeset -f`) are omitted from otherwise selected scripts. The manifest
-makes these excerpt boundaries explicit.
-
-To add coverage, copy a reviewed upstream file or a self-contained range, record
-its provenance, and obtain its expected result from Bash 5.3 in the same isolated
-environment. Add a separate fixture for an unsupported case and explain any
-`known_failure`; never adjust a Bash expectation to match go-bash behavior.
+To add coverage, copy a reviewed upstream file or self-contained range, record
+its provenance, and obtain expected results from Bash 5.3 in the same isolated
+environment. Tests never regenerate expectations from go-bash. The harness still
+supports explicit `known_failure` annotations for future ports; none are used
+now. `BASH_TEST_STRICT=1` prevents any annotated mismatch from becoming a skip.

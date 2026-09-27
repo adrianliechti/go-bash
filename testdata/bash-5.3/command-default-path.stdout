@@ -1,0 +1,4 @@
+/usr/local/bin:/usr/GNU/bin:/usr/bin:/bin:.
+cannot find cat in $TMPDIR
+cannot find cat with empty $PATH
+PATH = /usr/local/bin:/usr/GNU/bin:/usr/bin:/bin:.

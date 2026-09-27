@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/adrianliechti/go-bash/internal/fsys"
@@ -195,7 +196,12 @@ func (s *Shell) lock(ctx context.Context) error {
 	}
 }
 func (s *Shell) unlock() { <-s.gate }
+
+// Close runs pending EXIT cleanup and releases the session. Use Finish first
+// when the cleanup output or exit status is needed. Close discards that output.
 func (s *Shell) Close(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, s.opts.Timeout)
+	defer cancel()
 	if e := s.lock(ctx); e != nil {
 		return e
 	}
@@ -203,13 +209,25 @@ func (s *Shell) Close(ctx context.Context) error {
 	if s.closed {
 		return nil
 	}
+	_, trapErr := s.runLocked(ctx, cancel, Request{}, true)
 	s.closed = true
-	return s.runtime.Close(ctx)
+	return errors.Join(trapErr, s.shell.Close(), s.runtime.Close(ctx))
 }
 func (s *Shell) Exec(ctx context.Context, script string) (Result, error) {
 	return s.Run(ctx, Request{Script: script})
 }
 func (s *Shell) Run(ctx context.Context, req Request) (Result, error) {
+	return s.run(ctx, req, false)
+}
+
+// Finish supplies EOF to the shell, running its pending EXIT trap once. It
+// returns the final output and status, and leaves file access available until
+// Close. Calling Exec or Run again starts another batch in the same session.
+func (s *Shell) Finish(ctx context.Context) (Result, error) {
+	return s.run(ctx, Request{}, true)
+}
+
+func (s *Shell) run(ctx context.Context, req Request, finish bool) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.opts.Timeout)
 	defer cancel()
 	if e := s.lock(ctx); e != nil {
@@ -222,8 +240,19 @@ func (s *Shell) Run(ctx context.Context, req Request) (Result, error) {
 	if len(req.Stdin) > shell.MaxScript {
 		return Result{}, shell.ErrLimit
 	}
+	return s.runLocked(ctx, cancel, req, finish)
+}
+
+func (s *Shell) runLocked(ctx context.Context, cancel context.CancelFunc, req Request, finish bool) (Result, error) {
 	output := &capture{remaining: s.opts.MaxOutputBytes, cancel: cancel}
-	code, e := s.shell.Run(ctx, req.Script, shell.IO{In: strings.NewReader(req.Stdin), Out: captureWriter{output, false}, Err: captureWriter{output, true}, InSet: req.Stdin != ""}, s.opts.MaxSteps)
+	streams := shell.IO{In: strings.NewReader(req.Stdin), Out: captureWriter{output, false}, Err: captureWriter{output, true}, InSet: req.Stdin != ""}
+	var code int
+	var e error
+	if finish {
+		code, e = s.shell.Finish(ctx, streams, s.opts.MaxSteps)
+	} else {
+		code, e = s.shell.Run(ctx, req.Script, streams, s.opts.MaxSteps)
+	}
 	if output.exceeded {
 		e = ErrOutputLimit
 		code = 1
@@ -278,7 +307,7 @@ func Versions() map[string]string {
 func (s *Shell) command(ctx context.Context, cwd string, args []string, env map[string]string, streams shell.IO) (int, error) {
 	if handler := s.commands[args[0]]; handler != nil {
 		return handler(ctx, &Command{
-			Args: args, Cwd: cwd, Env: env, FS: commandFS{s.fs},
+			Args: args, Cwd: cwd, Env: env, FS: maskedCommandFS{commandFS{s.fs}, fs.FileMode(streams.Umask)},
 			Stdin: streams.In, Stdout: streams.Out, Stderr: streams.Err,
 		})
 	}
@@ -292,13 +321,18 @@ func (s *Shell) command(ctx context.Context, cwd string, args []string, env map[
 		return 1, e
 	}
 	argv := def.Argv(args)
-	fc := wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(&fsys.WASI{NS: s.fs, Cwd: "/"}, "/")
-	mc := wazero.NewModuleConfig().WithName("").WithArgs(argv...).WithFSConfig(fc).WithStdin(streams.In).WithStdout(streams.Out).WithStderr(streams.Err).WithRandSource(rand.Reader).WithSysWalltime().WithSysNanotime().WithNanosleep(func(ns int64) {
+	commandCtx, cancelCommand := context.WithCancel(ctx)
+	defer cancelCommand()
+	brokenPipe := &commandPipeState{cancel: cancelCommand}
+	stdout := commandPipeWriter{streams.Out, brokenPipe}
+	stderr := commandPipeWriter{streams.Err, brokenPipe}
+	fc := wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(&fsys.WASI{NS: s.fs, Cwd: "/", Umask: fs.FileMode(streams.Umask)}, "/")
+	mc := wazero.NewModuleConfig().WithName("").WithArgs(argv...).WithFSConfig(fc).WithStdin(streams.In).WithStdout(stdout).WithStderr(stderr).WithRandSource(rand.Reader).WithSysWalltime().WithSysNanotime().WithNanosleep(func(ns int64) {
 		timer := time.NewTimer(time.Duration(ns))
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-		case <-ctx.Done():
+		case <-commandCtx.Done():
 		}
 	})
 	for k, v := range env {
@@ -306,12 +340,15 @@ func (s *Shell) command(ctx context.Context, cwd string, args []string, env map[
 	}
 	mc = mc.WithEnv("BASH_CWD", cwd)
 	mc = mc.WithEnv("BASH_STDIN", strconv.FormatBool(streams.InSet))
-	mod, e := s.runtime.InstantiateModule(ctx, compiled, mc)
+	mod, e := s.runtime.InstantiateModule(commandCtx, compiled, mc)
 	if mod != nil {
 		_ = mod.Close(ctx)
 	}
 	if ctx.Err() != nil {
 		return 1, ctx.Err()
+	}
+	if brokenPipe.closed.Load() {
+		return 141, nil // virtual SIGPIPE; do not turn it into a WASI I/O diagnostic
 	}
 	if e != nil {
 		var exit *sys.ExitError
@@ -321,6 +358,27 @@ func (s *Shell) command(ctx context.Context, cwd string, args []string, env map[
 		return 1, e
 	}
 	return 0, nil
+}
+
+type commandPipeState struct {
+	closed atomic.Bool
+	cancel context.CancelFunc
+}
+type commandPipeWriter struct {
+	w     io.Writer
+	state *commandPipeState
+}
+
+func (w commandPipeWriter) Write(p []byte) (int, error) {
+	if w.state.closed.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	n, err := w.w.Write(p)
+	if errors.Is(err, io.ErrClosedPipe) {
+		w.state.closed.Store(true)
+		w.state.cancel()
+	}
+	return n, err
 }
 
 type capture struct {

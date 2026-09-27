@@ -56,16 +56,34 @@ func run() int {
 	}
 	defer b.Close(context.Background())
 	exited := false
+	executionError := false
 	exec := func(src, stdin string) int {
 		res, err := b.Run(ctx, bash.Request{Script: src, Stdin: stdin})
 		exited = res.Exited
 		fmt.Fprint(os.Stdout, res.Stdout)
 		fmt.Fprint(os.Stderr, res.Stderr)
+		executionError = err != nil
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "go-bash:", err)
 			if res.ExitCode == 0 {
 				return 1
 			}
+		}
+		return res.ExitCode
+	}
+	finish := func(code int) int {
+		if exited {
+			return code
+		}
+		res, err := b.Finish(ctx)
+		fmt.Fprint(os.Stdout, res.Stdout)
+		fmt.Fprint(os.Stderr, res.Stderr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "go-bash:", err)
+			return 1
+		}
+		if executionError {
+			return code
 		}
 		return res.ExitCode
 	}
@@ -87,7 +105,7 @@ func run() int {
 			}
 			stdin = string(data)
 		}
-		return exec(command, stdin)
+		return finish(exec(command, stdin))
 	}
 	if !interactive {
 		data, e := io.ReadAll(io.LimitReader(os.Stdin, shell.MaxScript+1))
@@ -95,7 +113,7 @@ func run() int {
 			fmt.Fprintln(os.Stderr, "go-bash: script too large or unreadable")
 			return 1
 		}
-		return exec(string(data), "")
+		return finish(exec(string(data), ""))
 	}
 	fmt.Fprintln(os.Stderr, "go-bash — /workspace is", *root, "(writes persist unless -readonly)")
 	scanner := bufio.NewScanner(os.Stdin)
@@ -103,7 +121,7 @@ func run() int {
 	var src strings.Builder
 	code := 0
 	for ctx.Err() == nil {
-		prompt := "go-bash$ "
+		prompt := "$ "
 		if src.Len() > 0 {
 			prompt = "> "
 		}
@@ -131,5 +149,5 @@ func run() int {
 	if src.Len() > 0 {
 		code = exec(src.String(), "")
 	}
-	return code
+	return finish(code)
 }

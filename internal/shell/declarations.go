@@ -185,6 +185,9 @@ func (s *Shell) declareValues(builtin string, operands []declaration, streams IO
 		// Attribute-only declarations may mark an existing readonly binding as
 		// exported; they do not assign its value and bypass Set intentionally.
 		target[name] = value
+		if name == "OPTIND" && operand.assigned && !global {
+			s.optOffset = 0
+		}
 	}
 	return code, nil
 }

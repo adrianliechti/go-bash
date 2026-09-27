@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,12 +22,13 @@ import (
 func TestBash53Upstream(t *testing.T) {
 	const dir = "testdata/bash-5.3"
 	var cases []struct {
-		Name         string `json:"name"`
-		Source       string `json:"source"`
-		Lines        string `json:"lines"`
-		ExitCode     int    `json:"exit_code"`
-		Stderr       string `json:"stderr"`
-		KnownFailure string `json:"known_failure,omitempty"`
+		Name         string   `json:"name"`
+		Source       string   `json:"source"`
+		Lines        string   `json:"lines"`
+		ExitCode     int      `json:"exit_code"`
+		Stderr       string   `json:"stderr"`
+		KnownFailure string   `json:"known_failure,omitempty"`
+		SupportFiles []string `json:"support_files,omitempty"`
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
@@ -53,6 +55,22 @@ func TestBash53Upstream(t *testing.T) {
 		seen[tc.Name] = true
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Logf("GNU Bash 5.3 tests/%s, %s", tc.Source, tc.Lines)
+			// Some upstream drivers source or invoke fixed helper scripts. Copy
+			// only manifest-listed, reviewed files into each isolated directory.
+			files := make(map[string][]byte)
+			var setup strings.Builder
+			setup.WriteString("THIS_SH=bash\n")
+			for _, name := range tc.SupportFiles {
+				if !fs.ValidPath(name) || strings.Contains(name, "/") {
+					t.Fatalf("invalid support file %q", name)
+				}
+				data, err := os.ReadFile(filepath.Join(dir, "support", name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				files[name] = data
+				setup.WriteString("printf '%s' '" + strings.ReplaceAll(string(data), "'", "'\\''") + "' > '" + strings.ReplaceAll(name, "'", "'\\''") + "'\n")
+			}
 			script, err := os.ReadFile(filepath.Join(dir, tc.Name+".bash"))
 			if err != nil {
 				t.Fatal(err)
@@ -67,6 +85,12 @@ func TestBash53Upstream(t *testing.T) {
 				cmd := exec.CommandContext(ctx, oracle, "--noprofile", "--norc", "-c", "(\n"+string(script)+"\n)")
 				cmd.Dir = t.TempDir()
 				cmd.Env = bash53ReferenceEnv()
+				cmd.Env = append(cmd.Env, "THIS_SH="+oracle)
+				for name, data := range files {
+					if err := os.WriteFile(filepath.Join(cmd.Dir, name), data, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				var stdout, stderr bytes.Buffer
 				cmd.Stdout, cmd.Stderr = &stdout, &stderr
 				code := 0
@@ -83,7 +107,7 @@ func TestBash53Upstream(t *testing.T) {
 			}
 			// Share compiled WASM modules, but give each fixture its own directory
 			// and subshell so files, variables, functions, and options stay isolated.
-			r, err := b.Exec(t.Context(), "(\nmkdir "+tc.Name+" && cd "+tc.Name+" || exit 1\n"+string(script)+"\n)")
+			r, err := b.Exec(t.Context(), "(\nmkdir "+tc.Name+" && cd "+tc.Name+" || exit 1\n"+setup.String()+string(script)+"\n)")
 			if err != nil || r.Stdout != string(want) || r.Stderr != tc.Stderr || r.ExitCode != tc.ExitCode || r.Exited {
 				if tc.KnownFailure != "" && !strict {
 					t.Logf("stdout %q, stderr %q, exit %d, error %v; want %q, %q, %d", r.Stdout, r.Stderr, r.ExitCode, err, want, tc.Stderr, tc.ExitCode)

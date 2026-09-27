@@ -1,0 +1,9 @@
+in o1 (readonly modifying local scalars):
+declare -r i1="a b c"
+declare -r j1="1 2 3"
+in o2 (readonly setting global scalars):
+declare -r i2="a b c"
+declare -r j2="1 2 3"
+after o2:
+declare -r i2="a b c"
+declare -r j2="1 2 3"

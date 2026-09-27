@@ -32,8 +32,7 @@
     "source": "arith-for.tests",
     "lines": "57-66",
     "exit_code": 0,
-    "stderr": "",
-    "known_failure": "Quoted arithmetic conditions evaluate to zero instead of evaluating their contents."
+    "stderr": ""
   },
   {
     "name": "conditional-logic",
@@ -75,8 +74,7 @@
     "source": "read9.sub",
     "lines": "complete file",
     "exit_code": 0,
-    "stderr": "",
-    "known_failure": "read fails to trim trailing IFS characters when IFS contains tab, carriage return, form feed, and vertical tab."
+    "stderr": ""
   },
   {
     "name": "read-ifs-assignment",
@@ -111,39 +109,199 @@
     "source": "case1.sub",
     "lines": "63-67, 74-77",
     "exit_code": 0,
-    "stderr": "",
-    "known_failure": "An unquoted backslash in the case word is retained instead of removed."
+    "stderr": ""
   },
   {
     "name": "conditional-negation",
     "source": "cond.tests",
     "lines": "32-34",
     "exit_code": 0,
-    "stderr": "",
-    "known_failure": "In [[ ! x || x ]], ! incorrectly negates the full expression instead of the first term."
+    "stderr": ""
   },
   {
     "name": "read-escaped-trailing-space",
     "source": "read.tests",
     "lines": "19",
     "exit_code": 0,
-    "stderr": "",
-    "known_failure": "read with one variable retains the escaped trailing IFS space in this multiword input."
+    "stderr": ""
   },
   {
     "name": "read-delimiter-short-consumer",
     "source": "read1.sub",
     "lines": "21-35",
     "exit_code": 0,
-    "stderr": "",
-    "known_failure": "An early-closing read -d consumer can cause spurious echo I/O diagnostics from the pipeline producer."
+    "stderr": ""
   },
   {
     "name": "here-document-delimiter-continuation",
     "source": "heredoc.tests",
     "lines": "95-105",
     "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "errexit-contexts",
+    "source": "set-e.tests",
+    "lines": "lines 14-110, 116-133",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "errexit-nested",
+    "source": "set-e1.sub",
+    "lines": "lines 14-18, 22-72",
+    "exit_code": 1,
+    "stderr": ""
+  },
+  {
+    "name": "xtrace-assignments",
+    "source": "set-x.tests",
+    "lines": "lines 19, 31-37",
+    "exit_code": 0,
+    "stderr": "+ foo=one\n+ foo+=two\n+ echo onetwo\n+ foo=one\n+ echo onetwo\n+ set +x\n"
+  },
+  {
+    "name": "local-restoration",
+    "source": "varenv.tests",
+    "lines": "lines 120-139, 164-171, 267-268",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "declare-global",
+    "source": "builtins3.sub",
+    "lines": "complete file, lines 1-14",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "declare-global-scope",
+    "source": "varenv4.sub",
+    "lines": "lines 38-57",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "readonly-scalars",
+    "source": "varenv9.sub",
+    "lines": "lines 14-25, 32-44",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "readonly-function-scopes",
+    "source": "varenv23.sub",
+    "lines": "lines 29-34, 42-49",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "eval-expansion",
+    "source": "builtins.tests",
+    "lines": "lines 75-78, 80-88",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "source-arguments-return",
+    "source": "builtins.tests",
+    "lines": "lines 158-181, 194-197",
+    "exit_code": 0,
     "stderr": "",
-    "known_failure": "Backslash-newline folding in a here-document delimiter consumes subsequent script text."
+    "support_files": [
+      "source1.sub",
+      "source2.sub",
+      "source3.sub",
+      "source4.sub"
+    ]
+  },
+  {
+    "name": "command-discovery",
+    "source": "builtins7.sub",
+    "lines": "lines 9-12, 16-17, 22-25, 30, 33-36",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "command-default-path",
+    "source": "exec10.sub",
+    "lines": "lines 14-37",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "umask-basic",
+    "source": "builtins.tests",
+    "lines": "lines 90-102",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "umask-symbolic",
+    "source": "builtins8.sub",
+    "lines": "complete file, lines 1-85",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "trap-exit",
+    "source": "trap.tests",
+    "lines": "lines 16, 19-24, 66-73",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "exec-descriptors",
+    "source": "redir.tests",
+    "lines": "lines 63-70, 74-78, 82-90, 175-178, 210-217",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "getopts-explicit",
+    "source": "getopts3.sub",
+    "lines": "complete file, lines 1-40",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "getopts-nested",
+    "source": "getopts8.sub",
+    "lines": "complete file, lines 1-13",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "getopts-cursor",
+    "source": "getopts9.sub",
+    "lines": "complete file, lines 1-29",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "getopts-drivers",
+    "source": "getopts.tests",
+    "lines": "lines 25-26, 29, 33-43",
+    "exit_code": 0,
+    "stderr": "",
+    "support_files": [
+      "getopts1.sub",
+      "getopts2.sub",
+      "getopts4.sub"
+    ]
+  },
+  {
+    "name": "nounset-empty-arguments",
+    "source": "dollar-at3.sub",
+    "lines": "complete file, lines 1-9",
+    "exit_code": 0,
+    "stderr": ""
+  },
+  {
+    "name": "quoted-empty-arguments",
+    "source": "dollar-at-star5.sub",
+    "lines": "lines 14-25",
+    "exit_code": 0,
+    "stderr": ""
   }
 ]

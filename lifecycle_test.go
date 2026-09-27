@@ -142,13 +142,22 @@ func TestRedirectionCloseFailureIsNotSuccess(t *testing.T) {
 	want := errors.New("commit failed")
 	m := &closeFailureFS{Memory: vfs.NewMemory(1024), err: want}
 	b := newShell(t, bash.Options{Mounts: []bash.Mount{{Path: "/data", FS: m}}})
-	for _, script := range []string{"printf data > /data/file", "exit 0 > /data/file", "f() { return 0; }; f > /data/file"} {
+	scripts := []string{
+		"printf data > /data/file", "exit 0 > /data/file", "f() { return 0; }; f > /data/file",
+		"(exec >/data/file; printf data)",
+		"x=$(exec >/data/file; printf data)",
+		"bash -c 'exec 3>/data/file; printf data >&3'",
+		"{ exec 3>/data/file; printf data >&3; } | cat",
+		"printf data | { exec 3>/data/file; cat >&3; }",
+		"exec 3>/data/file; (exec 3>&-); exec 3>&-",
+	}
+	for _, script := range scripts {
 		r, err := b.Exec(t.Context(), script)
 		if !errors.Is(err, want) || r.ExitCode == 0 {
 			t.Fatalf("lost writeback failure: %s: %#v, %v", script, r, err)
 		}
 	}
-	if m.closed != 3 {
+	if m.closed != len(scripts) {
 		t.Fatalf("redirection closed %d times", m.closed)
 	}
 }

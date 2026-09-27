@@ -1,0 +1,4 @@
+subshell exit
+trap -- 'echo exiting' EXIT
+0
+exiting

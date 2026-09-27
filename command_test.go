@@ -85,7 +85,7 @@ func TestCustomCommands(t *testing.T) {
 
 func TestInvalidCustomCommands(t *testing.T) {
 	noop := func(context.Context, *bash.Command) (int, error) { return 0, nil }
-	for _, name := range []string{"", ".", "..", "a/b", "/python", "a\\b", "a\x00b", "cat", "rg", "cd", "export", "sh", "xargs", "set", "shift", "read"} {
+	for _, name := range []string{"", ".", "..", "a/b", "/python", "a\\b", "a\x00b", "cat", "rg", "cd", "export", "sh", "xargs", "set", "shift", "read", "exec", "trap", "getopts", "umask"} {
 		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
 			b, err := bash.New(t.Context(), bash.Options{Commands: map[string]bash.CommandFunc{name: noop}})
 			if err == nil {

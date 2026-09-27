@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -31,27 +30,41 @@ type IO struct {
 	Out, Err io.Writer
 	// InSet distinguishes a pipe or redirect from the default empty stdin.
 	InSet bool
+	// Umask is per virtual process and never changes the host process mask.
+	Umask uint32
 }
 type ExecFunc func(context.Context, string, []string, map[string]string, IO) (int, error)
 type Shell struct {
-	FS            *fsys.Namespace
-	Exec          ExecFunc
-	Cwd           string
-	Exited        bool
-	vars          variables
-	funcs         map[string]*syntax.Stmt
-	status        int
-	subStatus     int
-	args          []string
-	depth         int
-	pipefail      bool
-	errexit       bool
-	nounset       bool
-	xtrace        bool
-	ignoreErrexit int
-	traceDepth    int
-	sourceDepth   int
-	locals        []variables // values to restore when each function returns
+	FS             *fsys.Namespace
+	Exec           ExecFunc
+	Cwd            string
+	Exited         bool
+	vars           variables
+	funcs          map[string]*syntax.Stmt
+	status         int
+	subStatus      int
+	args           []string
+	argsGeneration uint64
+	depth          int
+	pipefail       bool
+	errexit        bool
+	nounset        bool
+	xtrace         bool
+	ignoreErrexit  int
+	traceDepth     int
+	sourceDepth    int
+	locals         []variables // values to restore when each function returns
+	umask          uint32
+	optIndex       int
+	optOffset      int
+	optWord        string
+	baseIO         *IO
+	fds            [10]*descriptor
+	redirectFrame  *redirectFrame
+	exitTrap       string
+	trapSet        bool
+	trapInherited  bool
+	subshell       bool
 }
 type run struct {
 	ctx      context.Context
@@ -63,26 +76,36 @@ type run struct {
 // handled by the parser instead of invoke.
 func IsBuiltin(name string) bool {
 	switch name {
-	case ":", "true", "false", "cd", "pwd", "export", "local", "declare", "typeset", "readonly", "unset", "exit", "return", "break", "continue", "bash", "sh", "xargs", "set", "shift", "read", "command", "type", "which", "source", ".", "eval":
+	case ":", "true", "false", "cd", "pwd", "export", "local", "declare", "typeset", "readonly", "unset", "exit", "return", "break", "continue", "bash", "sh", "xargs", "set", "shift", "read", "command", "type", "which", "source", ".", "eval", "getopts", "umask", "exec", "trap":
 		return true
 	}
 	return false
 }
 
 func New(f *fsys.Namespace, cwd string, env map[string]string, exec ExecFunc) *Shell {
-	s := &Shell{FS: f, Exec: exec, Cwd: cwd, vars: make(variables), funcs: make(map[string]*syntax.Stmt)}
+	s := &Shell{FS: f, Exec: exec, Cwd: cwd, vars: make(variables), funcs: make(map[string]*syntax.Stmt), umask: 0022}
 	for k, v := range map[string]string{"HOME": "/work", "PATH": "/usr/bin:/bin", "TMPDIR": "/tmp", "LC_ALL": "C", "TZ": "UTC"} {
 		s.vars[k] = variable(v, true)
 	}
+	s.vars["PS1"] = variable("$ ", false)
 	for k, v := range env {
 		s.vars[k] = variable(v, true)
 	}
 	s.vars["PWD"] = variable(cwd, true)
 	s.vars["PS4"] = variable("+ ", false)
+	s.vars["OPTIND"] = variable("1", false)
+	s.vars["OPTERR"] = variable("1", false)
+	s.initDescriptors()
 	return s
 }
 func (s *Shell) clone() *Shell {
 	c := *s
+	c.redirectFrame = nil
+	c.trapInherited = true
+	c.subshell = true
+	for _, d := range c.fds {
+		d.retain()
+	}
 	c.vars = maps.Clone(s.vars)
 	c.funcs = maps.Clone(s.funcs)
 	c.args = append([]string(nil), s.args...)
@@ -97,7 +120,7 @@ func Parse(src string) (*syntax.File, error) {
 	if len(src) > MaxScript {
 		return nil, ErrLimit
 	}
-	f, e := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "script")
+	f, e := parseBashSource(src)
 	if e != nil {
 		return nil, e
 	}
@@ -158,10 +181,19 @@ func Parse(src string) (*syntax.File, error) {
 		}
 		return e == nil
 	})
+	if e == nil {
+		syntax.Walk(f, func(n syntax.Node) bool {
+			if test, ok := n.(*syntax.TestClause); ok {
+				test.X = normalizeTest(test.X)
+			}
+			return true
+		})
+	}
 	return f, e
 }
 func (s *Shell) Run(ctx context.Context, src string, streams IO, maxSteps int64) (int, error) {
 	s.Exited = false
+	*s.baseIO = streams
 	f, e := Parse(src)
 	if e != nil {
 		return 2, e
@@ -171,7 +203,9 @@ func (s *Shell) Run(ctx context.Context, src string, streams IO, maxSteps int64)
 	var control flow
 	if errors.As(e, &control) && control.terminates() {
 		s.Exited = true
-		return control.code, nil
+		code, e = s.finish(r, code, e)
+		s.status = code
+		return code, e
 	}
 	return code, e
 }
@@ -200,6 +234,7 @@ func (s *Shell) stmt(r *run, stmt *syntax.Stmt, streams IO) (int, error) {
 	return s.stmtWithPipe(r, stmt, streams, false)
 }
 func (s *Shell) stmtWithPipe(r *run, stmt *syntax.Stmt, streams IO, pipeAll bool) (code int, err error) {
+	streams = s.streams()
 	if stmt.Negated {
 		s.ignoreErrexit++
 		defer func() { s.ignoreErrexit-- }()
@@ -267,10 +302,14 @@ func (s *Shell) stmtWithPipe(r *run, stmt *syntax.Stmt, streams IO, pipeAll bool
 	}
 	// Bash's |& duplicates stderr after applying the command's redirections.
 	if pipeAll {
-		io2.Err = io2.Out
+		closers = append(closers, s.changeDescriptor(2, s.fds[1].retain()))
+		io2 = s.streams()
 	}
 	diagnostics = io2.Err
 	if simple {
+		previous := s.redirectFrame
+		s.redirectFrame = &redirectFrame{changes: closers}
+		defer func() { s.redirectFrame = previous }()
 		code, e = s.call(r, call, args, io2)
 	} else {
 		code, e = s.command(r, stmt.Cmd, io2)
@@ -287,7 +326,10 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 	case *syntax.Block:
 		return s.list(r, c.Stmts, streams)
 	case *syntax.Subshell:
-		code, e := s.clone().list(r, c.Stmts, streams)
+		child := s.clone()
+		code, e := child.list(r, c.Stmts, streams)
+		code, e = child.finish(r, code, e)
+		child.closeResult(&code, &e)
 		var f flow
 		if errors.As(e, &f) && f.terminates() {
 			e = nil
@@ -359,7 +401,7 @@ func (s *Shell) command(r *run, cmd syntax.Command, streams IO) (int, error) {
 	case *syntax.DeclClause:
 		return s.declare(r, c, streams)
 	case *syntax.ArithmCmd:
-		n, e := expand.Arithm(s.config(r, streams), c.X)
+		n, e := s.arithmetic(r, c.X, streams)
 		if e != nil {
 			return 1, e
 		}
@@ -377,15 +419,22 @@ func (s *Shell) ignoringErrexit(fn func() (int, error)) (int, error) {
 	return fn()
 }
 func (s *Shell) assign(r *run, a *syntax.Assign, export bool, streams IO) error {
-	v, e := expand.Literal(s.config(r, streams), a.Value)
+	v, e := s.literal(r, a.Value, streams)
 	if e != nil {
 		return e
+	}
+	traceName := a.Name.Value
+	if a.Append {
+		traceName += "+"
+	}
+	if err := s.traceAssignment(streams, traceName, v); err != nil {
+		return err
 	}
 	if a.Append {
 		v = s.vars.Get(a.Name.Value).String() + v
 	}
-	if err := s.traceAssignment(streams, a.Name.Value, v); err != nil {
-		return err
+	if a.Name.Value == "OPTIND" {
+		s.optOffset = 0
 	}
 	return s.vars.Set(a.Name.Value, variable(v, export))
 }
@@ -432,12 +481,16 @@ func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
 		if s.depth >= 64 {
 			return 1, ErrLimit
 		}
-		old := s.args
+		old, generation := s.args, s.argsGeneration
+		optIndex, optOffset, optWord := s.optIndex, s.optOffset, s.optWord
 		s.args = args[1:]
 		s.depth++
 		s.locals = append(s.locals, make(variables))
 		defer func() {
 			scope := s.locals[len(s.locals)-1]
+			if _, local := scope["OPTIND"]; local {
+				s.optIndex, s.optOffset, s.optWord = optIndex, optOffset, optWord
+			}
 			for name, value := range scope {
 				if value.Declared() {
 					s.vars[name] = value
@@ -446,11 +499,19 @@ func (s *Shell) invoke(r *run, args []string, streams IO) (int, error) {
 				}
 			}
 			s.locals = s.locals[:len(s.locals)-1]
-			s.args = old
+			s.args, s.argsGeneration = old, generation
 			s.depth--
 		}()
 		code, e := s.stmt(r, body, streams)
 		var f flow
+		if errors.As(e, &f) && (f.kind == "exit" || s.subshell && f.kind == "errexit") {
+			// Explicit exit (and errexit in a subshell) runs cleanup while
+			// function locals are still visible.
+			code, e = s.finish(r, code, e)
+			if e == nil {
+				e = flow{"exit", code}
+			}
+		}
 		if errors.As(e, &f) && f.kind == "return" {
 			e = nil
 		}
@@ -471,6 +532,14 @@ func (s *Shell) invokeBuiltin(r *run, args []string, streams IO) (int, error) {
 		return s.shift(args[1:], streams)
 	case "read":
 		return s.read(r, args[1:], streams)
+	case "getopts":
+		return s.getopts(args[1:], streams)
+	case "trap":
+		return s.trap(args[1:], streams)
+	case "exec":
+		return s.exec(r, args[1:], streams)
+	case "umask":
+		return s.mask(args[1:], streams)
 	case "command":
 		return s.commandBuiltin(r, args[1:], streams)
 	case "type", "which":
@@ -553,6 +622,7 @@ func (s *Shell) invokeBuiltin(r *run, args []string, streams IO) (int, error) {
 // external resolves registered commands and guest shell scripts using the same
 // virtual PATH lookup as command, type, and which.
 func (s *Shell) external(r *run, args []string, streams IO) (int, error) {
+	streams.Umask = s.umask
 	env := s.exported()
 	env["PWD"] = s.Cwd
 	names, denied := s.lookup(args[0], false, false)
@@ -671,7 +741,11 @@ func (s *Shell) xargs(r *run, args []string, streams IO) (int, error) {
 		return 0, nil
 	}
 	status := 0
-	child := IO{In: strings.NewReader(""), Out: streams.Out, Err: streams.Err}
+	childInput := newDescriptor(strings.NewReader(""), nil, nil)
+	childInput.defaultInput = &IO{} // xargs commands have no supplied stdin
+	restore := s.changeDescriptor(0, childInput)
+	defer restore.Close()
+	child := s.streams()
 	for first := true; first || len(items) > 0; first = false {
 		if e := r.step(); e != nil {
 			return 1, e
@@ -771,11 +845,13 @@ type flow struct {
 	code int
 }
 
-func (f flow) Error() string    { return f.kind }
-func (f flow) terminates() bool { return f.kind == "exit" || f.kind == "errexit" || f.kind == "fatal" }
+func (f flow) Error() string { return f.kind }
+func (f flow) terminates() bool {
+	return f.kind == "exec" || f.kind == "exit" || f.kind == "errexit" || f.kind == "fatal"
+}
 
 func (s *Shell) pipeline(r *run, c *syntax.BinaryCmd, streams IO) (int, error) {
-	reader, writer := io.Pipe()
+	reader, writer := newPipe()
 	stop := context.AfterFunc(r.ctx, func() { reader.CloseWithError(r.ctx.Err()); writer.CloseWithError(r.ctx.Err()) })
 	defer stop()
 	leftIO := IO{In: streams.In, Out: writer, Err: streams.Err, InSet: streams.InSet}
@@ -785,13 +861,21 @@ func (s *Shell) pipeline(r *run, c *syntax.BinaryCmd, streams IO) (int, error) {
 	}
 	done := make(chan result, 1)
 	left, right := s.clone(), s.clone()
+	_ = left.fds[1].release()
+	left.fds[1] = newDescriptor(nil, writer, nil)
+	_ = right.fds[0].release()
+	right.fds[0] = newDescriptor(reader, nil, nil)
 	go func() {
 		code, e := left.stmtWithPipe(r, c.X, leftIO, c.Op == syntax.PipeAll)
+		code, e = left.finish(r, code, e)
+		left.closeResult(&code, &e)
 		e = pipelineFlow(e)
 		_ = writer.CloseWithError(e)
 		done <- result{code, e}
 	}()
 	code, e := right.stmt(r, c.Y, IO{In: reader, Out: streams.Out, Err: streams.Err, InSet: true})
+	code, e = right.finish(r, code, e)
+	right.closeResult(&code, &e)
 	e = pipelineFlow(e)
 	_ = reader.Close()
 	l := <-done
@@ -841,7 +925,11 @@ func (s *Shell) config(r *run, streams IO) *expand.Config {
 		child.traceDepth++
 		child.errexit = false // Bash clears -e in command substitutions by default.
 		out := &boundedWriter{w: w, left: maxExpansion}
+		_ = child.fds[1].release()
+		child.fds[1] = newDescriptor(nil, out, nil)
 		code, e := child.list(r, c.Stmts, IO{In: streams.In, Out: out, Err: streams.Err, InSet: streams.InSet})
+		code, e = child.finish(r, code, e)
+		child.closeResult(&code, &e)
 		s.subStatus = code
 		if out.err != nil {
 			return out.err
@@ -982,145 +1070,6 @@ func (e *environment) Get(k string) expand.Variable {
 }
 func (e *environment) Each(f func(string, expand.Variable) bool) { e.s.vars.Each(f) }
 func (e *environment) Set(k string, v expand.Variable) error     { return e.s.vars.Set(k, v) }
-
-func (s *Shell) redirect(r *run, redirs []*syntax.Redirect, streams IO) (IO, []io.Closer, error) {
-	var closers []io.Closer
-	for _, rd := range redirs {
-		fd := 1
-		if rd.Op == syntax.RdrIn || rd.Op == syntax.Hdoc || rd.Op == syntax.DashHdoc || rd.Op == syntax.WordHdoc || rd.Op == syntax.DplIn {
-			fd = 0
-		}
-		if rd.N != nil {
-			fd, _ = strconv.Atoi(rd.N.Value)
-		}
-		if rd.Op == syntax.Hdoc || rd.Op == syntax.DashHdoc {
-			word := rd.Hdoc
-			if rd.Op == syntax.DashHdoc {
-				word = stripHeredocTabs(word)
-			}
-			body, e := expand.Document(s.config(r, streams), word)
-			if e != nil {
-				return streams, closers, e
-			}
-			if len(body) > maxExpansion {
-				return streams, closers, ErrLimit
-			}
-			streams.In = strings.NewReader(body)
-			streams.InSet = true
-			continue
-		}
-		if rd.Op == syntax.WordHdoc {
-			text, e := expand.Literal(s.config(r, streams), rd.Word)
-			if e != nil {
-				return streams, closers, e
-			}
-			if len(text) >= maxExpansion {
-				return streams, closers, ErrLimit
-			}
-			streams.In = strings.NewReader(text + "\n")
-			streams.InSet = true
-			continue
-		}
-		words, e := s.fields(r, []*syntax.Word{rd.Word}, streams)
-		if e != nil {
-			return streams, closers, e
-		}
-		if len(words) != 1 {
-			return streams, closers, errors.New("ambiguous redirect")
-		}
-		name := words[0]
-		switch rd.Op {
-		case syntax.DplOut:
-			var w io.Writer
-			switch name {
-			case "1":
-				w = streams.Out
-			case "2":
-				w = streams.Err
-			case "-":
-				w = closedWriter{}
-			default:
-				return streams, closers, errors.New("unsupported file descriptor")
-			}
-			if fd == 1 {
-				streams.Out = w
-			} else if fd == 2 {
-				streams.Err = w
-			} else {
-				return streams, closers, errors.New("unsupported output descriptor")
-			}
-			continue
-		case syntax.WordHdoc:
-			streams.In = strings.NewReader(name + "\n")
-			streams.InSet = true
-			continue
-		}
-		flag := os.O_RDONLY
-		switch rd.Op {
-		case syntax.RdrIn:
-		case syntax.RdrOut, syntax.ClbOut, syntax.RdrAll:
-			flag = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-		case syntax.AppOut, syntax.AppAll:
-			flag = os.O_WRONLY | os.O_CREATE | os.O_APPEND
-		default:
-			return streams, closers, fmt.Errorf("unsupported redirect: %s", rd.Op)
-		}
-		f, e := s.FS.Open(fsys.Resolve(s.Cwd, name), flag, 0666)
-		if e != nil {
-			return streams, closers, e
-		}
-		closers = append(closers, f)
-		if rd.Op == syntax.RdrIn {
-			if fd != 0 {
-				return streams, closers, errors.New("unsupported input descriptor")
-			}
-			streams.In = f
-			streams.InSet = true
-		} else {
-			w, ok := f.(io.Writer)
-			if !ok {
-				return streams, closers, fs.ErrPermission
-			}
-			if rd.Op == syntax.RdrAll || rd.Op == syntax.AppAll {
-				streams.Out = w
-				streams.Err = w
-			} else if fd == 1 {
-				streams.Out = w
-			} else if fd == 2 {
-				streams.Err = w
-			} else {
-				return streams, closers, errors.New("unsupported output descriptor")
-			}
-		}
-	}
-	return streams, closers, nil
-}
-
-type closedWriter struct{}
-
-func (closedWriter) Write([]byte) (int, error) { return 0, fs.ErrClosed }
-
-func validateRedirect(rd *syntax.Redirect) error {
-	fd := ""
-	if rd.N != nil {
-		fd = rd.N.Value
-	}
-	switch rd.Op {
-	case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
-		if fd == "" || fd == "0" {
-			return nil
-		}
-	case syntax.RdrOut, syntax.AppOut, syntax.ClbOut, syntax.DplOut:
-		if fd == "" || fd == "1" || fd == "2" {
-			return nil
-		}
-	case syntax.RdrAll, syntax.AppAll:
-		if fd == "" {
-			return nil
-		}
-	}
-	return fmt.Errorf("unsupported redirection: %s%s", fd, rd.Op)
-}
 
 // Strip only literal source tabs, before expansion. Tabs supplied by a variable
 // or command substitution must survive. Do not mutate a stored function's AST.

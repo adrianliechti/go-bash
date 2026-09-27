@@ -33,6 +33,7 @@ func (s *Shell) set(args []string, streams IO) (int, error) {
 		arg := args[0]
 		if arg == "--" {
 			s.args = append([]string(nil), args[1:]...)
+			s.argsGeneration++
 			return 0, nil
 		}
 		if arg == "-" {
@@ -75,6 +76,7 @@ func (s *Shell) set(args []string, streams IO) (int, error) {
 	}
 	if len(args) > 0 {
 		s.args = append([]string(nil), args...)
+		s.argsGeneration++
 	}
 	return 0, nil
 }
@@ -184,14 +186,24 @@ func (s *Shell) read(r *run, args []string, streams IO) (int, error) {
 			switch arg[i] {
 			case 'r':
 				raw = true
-			case 'd':
+			case 'd', 'u':
 				value := arg[i+1:]
 				if value == "" {
 					if len(args) == 0 {
-						fmt.Fprintln(streams.Err, "read: -d requires a delimiter")
+						fmt.Fprintf(streams.Err, "read: -%c requires an argument\n", arg[i])
 						return 2, nil
 					}
 					value, args = args[0], args[1:]
+				}
+				if arg[i] == 'u' {
+					fd, err := strconv.Atoi(value)
+					if err != nil || fd < 0 || fd >= len(s.fds) || s.fds[fd] == nil || s.fds[fd].in == nil {
+						fmt.Fprintln(streams.Err, "read: bad file descriptor:", value)
+						return 1, nil
+					}
+					streams.In = s.fds[fd].in
+					i = len(arg)
+					continue
 				}
 				delimiter = 0
 				if value != "" {
@@ -209,6 +221,10 @@ func (s *Shell) read(r *run, args []string, streams IO) (int, error) {
 			fmt.Fprintln(streams.Err, "read: invalid variable name:", name)
 			return 1, nil
 		}
+	}
+	if _, closed := streams.In.(closedStream); closed {
+		fmt.Fprintln(streams.Err, "read: bad file descriptor")
+		return 1, nil
 	}
 	var line []byte
 	var quoted []bool

@@ -106,11 +106,14 @@ mount root. Seek, positioned I/O, truncate, timestamps, and symlink inspection
 are optional capabilities. `vfs.Memory` and `vfs.Directory` implement the common
 operations. There is no automatic copy-on-write overlay.
 
-Sessions retain files, variables, functions, and cwd between calls. Calls on one
+Sessions retain files, variables, functions, options, descriptors, and cwd between calls. Calls on one
 shell are serialized. `Run(ctx, Request{Script: ..., Stdin: ...})` supplies stdin;
 `ReadFile` retrieves a guest file. `Result.Exited` tells interactive callers that
 the script terminated the current shell through `exit`, `errexit`, or a fatal
-expansion/assignment error; the API session remains reusable.
+expansion/assignment error; the API session remains reusable. `Finish(ctx)` supplies
+EOF and returns any pending EXIT-trap output and final status. `Close(ctx)` also
+runs pending cleanup, discarding its output, before releasing resources. The CLI
+calls `Finish` at EOF and uses `$ ` as its default primary prompt (`PS1`).
 
 ### Custom Go commands
 
@@ -155,6 +158,13 @@ separate Go module uses the sibling `../go-pyodide` checkout, keeping CPython
 out of ordinary go-bash builds. Python reads shell files through its read-only
 mount API; shell redirection saves its output to writable mounts.
 
+[`examples/git`](examples/git) registers a virtual `git` backed by
+[go-git](https://github.com/adrianliechti/go-git), which implements common git
+commands in Go against the shell filesystem, with no host files, network, or
+child processes. Its test runs the same scripts in go-bash and with the host's
+real git, and requires identical output, including commit hashes. It uses the
+sibling `../go-git` checkout.
+
 ## Compatibility
 
 The compatibility target is **noninteractive Bash 5.3 scripting with GNU-style
@@ -189,7 +199,8 @@ the script runs. Negative extended patterns (`!(...)`) are not supported.
 
 Builtins include `cd`, `pwd`, `export`, `unset`, `exit`, `return`, `xargs`, `set`,
 `shift`, `read`, `local`, `declare`, `typeset`, `readonly`, `command`, `type`,
-`which`, `source`/`.`, `eval`, and single-level loop control.
+`which`, `source`/`.`, `eval`, `trap`, `exec`, `getopts`, `umask`, and single-level
+loop control.
 
 `set -euo pipefail` and separate or combined `-e`, `-u`, and `-x` options work.
 The corresponding named options are `errexit`, `nounset`, and `xtrace`; use `+`
@@ -219,8 +230,8 @@ searches PATH for executable files. All lookup uses the virtual filesystem.
 `source FILE [ARGS ...]` and `. FILE [ARGS ...]` parse and run a guest file in
 the current shell, retaining variable, function, option, and cwd changes.
 Sourcing searches PATH, then cwd, and does not require execute bits. Supplied
-arguments temporarily replace positional arguments; `return` ends the sourced
-file. `eval [ARG ...]` joins its arguments and parses them in the current shell.
+arguments temporarily replace positional arguments; an explicit `set --` in the
+sourced file retains the new arguments. `return` ends the sourced file. `eval [ARG ...]` joins its arguments and parses them in the current shell.
 Both share the caller's execution and recursion limits.
 
 `./script.sh` and scripts found through PATH require executable file modes and a
@@ -231,7 +242,8 @@ bits or a shebang; `sh -c SCRIPT [NAME [ARGS ...]]`, `bash -c`, and scripts on
 stdin are supported. Child shells start with default options unless explicitly
 passed options such as `-eu`; they use this same supported language subset.
 
-`read [-r] [-d DELIM] [NAME ...]` reads stdin without consuming subsequent lines,
+`read [-r] [-d DELIM] [-u FD] [NAME ...]` reads stdin (or the selected descriptor)
+without consuming subsequent lines,
 supports IFS splitting and backslash continuations, and assigns `REPLY` when no
 names are supplied. `-r` preserves backslashes and `-d ''` reads NUL-delimited
 records. At EOF it assigns any partial line and returns status 1. For example:
@@ -247,8 +259,32 @@ for ((i=0; i<3; i++)); do printf '%s\n' "$i"; done |
   done
 ```
 
+Descriptors 0 through 9 support input, output, append, read/write (`<>`),
+duplication (`>&`/`<&`), and closing (`>&-`/`<&-`). Bare `exec` makes its
+redirections persistent, including across API calls. `exec COMMAND ...` runs a
+virtual executable and ends the current shell; its EXIT trap is skipped after a
+successful replacement. No host process is launched.
+
+`trap 'COMMANDS' EXIT` (or `0`) installs cleanup for normal child-script completion,
+`exit`, and shell errors such as `set -e` failures. The handler sees the original
+`$?`; its ordinary commands preserve the exit status, while `exit N` overrides it.
+`trap - EXIT` removes the handler; `trap` and `trap -p EXIT` print it. Subshells
+reset execution of inherited handlers. Persistent API sessions keep their trap
+until exit, `Finish`, or `Close`. Cleanup shares script limits; an embedding error
+such as cancellation or an output limit is propagated rather than hidden.
+
+`getopts OPTSTRING NAME [ARGS ...]` supports clustered options, required arguments,
+`--`, `OPTIND`, `OPTARG`, `OPTERR`, and leading-colon silent errors. Set `OPTIND=1`
+to restart parsing; function-local `OPTIND` supports nested parsers.
+
+`umask` starts at `0022`, accepts octal and symbolic modes, and supports `-S`/`-p`
+printing. It applies to new files and directories made by redirections, WASM
+utilities, and custom command filesystem calls. Child shells inherit it; changes
+inside a subshell stay there. The host process umask is never changed.
+
 Not yet supported: job control/background jobs, process substitution, arrays,
-arbitrary file descriptors, traps, aliases, shell options beyond the four above,
+descriptors above 9 or `{fd}` allocation, signal/ERR/DEBUG/RETURN traps, aliases,
+shell options beyond the four above,
 or arbitrary native or WASM executables. Bare variable names in arithmetic
 still use the expansion library's zero-default behavior, including under `-u`.
 Unsupported syntax returns an error; unsupported builtin options return a
@@ -296,7 +332,8 @@ Important filesystem/WASI limitations:
   directory backends currently use microsecond precision for these updates.
 - Optional operations depend on the backend; command availability does not
   imply every flag works. Memory filesystem modes are metadata, not a multi-user
-  permission system. No shell umask or ownership model is implemented.
+  permission system. The virtual umask filters creation modes, but no ownership
+  model is implemented; host directory permissions can restrict them further.
 
 ## Boundaries and limits
 
@@ -342,8 +379,8 @@ boundaries. Fixed fixtures may run against an installed Bash in temporary
 directories; generated scripts never run on the host. The
 [Bash 5.3 upstream fixtures](testdata/bash-5.3/README.md) port selected GNU Bash
 tests with source attribution and pinned stdout, stderr, and exit status.
-Known compatibility gaps are reported as skips; `BASH_TEST_STRICT=1` makes them
-fail for implementation work. Set `BASH_TEST_BINARY=/path/to/bash-5.3` to check
+All 42 selected groups pass, including the seven formerly recorded gaps.
+Set `BASH_TEST_BINARY=/path/to/bash-5.3` to check
 expectations against a specific Bash 5.3 build. Pinned checks still run when the
 system Bash is older (for example, macOS's Bash 3.2) or unavailable.
 

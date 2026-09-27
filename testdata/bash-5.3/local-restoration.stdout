@@ -1,0 +1,12 @@
+toronto airport
+AVAR
+song by rush
+BVAR
+toronto airport
+AVAR
+AVAR
+unset
+declare -x ivar="42"
+a=z
+a=b
+a=z
