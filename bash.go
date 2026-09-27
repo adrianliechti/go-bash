@@ -244,14 +244,18 @@ func (s *Shell) run(ctx context.Context, req Request, finish bool) (Result, erro
 }
 
 func (s *Shell) runLocked(ctx context.Context, cancel context.CancelFunc, req Request, finish bool) (Result, error) {
-	output := &capture{remaining: s.opts.MaxOutputBytes, cancel: cancel}
-	streams := shell.IO{In: strings.NewReader(req.Stdin), Out: captureWriter{output, false}, Err: captureWriter{output, true}, InSet: req.Stdin != ""}
+	return s.runWithIO(ctx, cancel, req.Script, IO{Stdin: strings.NewReader(req.Stdin)}, req.Stdin != "", finish)
+}
+
+func (s *Shell) runWithIO(ctx context.Context, cancel context.CancelFunc, script string, streams IO, inSet, finish bool) (Result, error) {
+	output := &capture{remaining: s.opts.MaxOutputBytes, cancel: cancel, stdout: streams.Stdout, stderr: streams.Stderr}
+	x := shell.IO{In: streams.Stdin, Out: captureWriter{output, false}, Err: captureWriter{output, true}, InSet: inSet}
 	var code int
 	var e error
 	if finish {
-		code, e = s.shell.Finish(ctx, streams, s.opts.MaxSteps)
+		code, e = s.shell.Finish(ctx, x, s.opts.MaxSteps)
 	} else {
-		code, e = s.shell.Run(ctx, req.Script, streams, s.opts.MaxSteps)
+		code, e = s.shell.Run(ctx, script, x, s.opts.MaxSteps)
 	}
 	if output.exceeded {
 		e = ErrOutputLimit
@@ -382,11 +386,12 @@ func (w commandPipeWriter) Write(p []byte) (int, error) {
 }
 
 type capture struct {
-	mu        sync.Mutex
-	out, err  bytes.Buffer
-	remaining int
-	exceeded  bool
-	cancel    context.CancelFunc
+	mu             sync.Mutex
+	out, err       bytes.Buffer
+	stdout, stderr io.Writer
+	remaining      int
+	exceeded       bool
+	cancel         context.CancelFunc
 }
 type captureWriter struct {
 	c      *capture
@@ -396,9 +401,15 @@ type captureWriter struct {
 func (w captureWriter) Write(p []byte) (int, error) {
 	w.c.mu.Lock()
 	defer w.c.mu.Unlock()
-	buf := &w.c.out
+	var buf io.Writer = &w.c.out
+	if w.c.stdout != nil {
+		buf = w.c.stdout
+	}
 	if w.stderr {
 		buf = &w.c.err
+		if w.c.stderr != nil {
+			buf = w.c.stderr
+		}
 	}
 	if len(p) > w.c.remaining {
 		n, _ := buf.Write(p[:w.c.remaining])
@@ -409,5 +420,8 @@ func (w captureWriter) Write(p []byte) (int, error) {
 	}
 	n, e := buf.Write(p)
 	w.c.remaining -= n
+	if n < len(p) && e == nil {
+		e = io.ErrShortWrite
+	}
 	return n, e
 }

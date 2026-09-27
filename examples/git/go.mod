@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/adrianliechti/go-bash v0.0.0
-	github.com/adrianliechti/go-git v0.0.0
+	github.com/adrianliechti/go-git v0.0.0-20260927203556-92d90da1a035
 )
 
 require (

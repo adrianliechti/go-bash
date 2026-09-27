@@ -75,9 +75,10 @@ type run struct {
 // IsBuiltin identifies names reserved by the shell, including declarations
 // handled by the parser instead of invoke.
 func IsBuiltin(name string) bool {
-	switch name {
-	case ":", "true", "false", "cd", "pwd", "export", "local", "declare", "typeset", "readonly", "unset", "exit", "return", "break", "continue", "bash", "sh", "xargs", "set", "shift", "read", "command", "type", "which", "source", ".", "eval", "getopts", "umask", "exec", "trap":
-		return true
+	for builtin := range strings.FieldsSeq(builtinNames) {
+		if name == builtin {
+			return true
+		}
 	}
 	return false
 }

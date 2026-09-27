@@ -47,6 +47,14 @@ func (r *descriptorReader) Read(p []byte) (int, error) {
 	defer r.mu.Unlock()
 	return r.in.Read(p)
 }
+func (r *descriptorReader) Fd() uintptr { return streamFD(r.in) }
+
+func streamFD(stream any) uintptr {
+	if f, ok := stream.(interface{ Fd() uintptr }); ok {
+		return f.Fd()
+	}
+	return ^uintptr(0)
+}
 func (d *descriptor) retain() *descriptor {
 	if d != nil {
 		d.refs.Add(1)
@@ -65,6 +73,7 @@ func (d *descriptor) release() error {
 type sessionInput struct{ io *IO }
 
 func (r sessionInput) Read(p []byte) (int, error) { return r.io.In.Read(p) }
+func (r sessionInput) Fd() uintptr                { return streamFD(r.io.In) }
 
 type sessionOutput struct {
 	io     *IO
@@ -76,6 +85,12 @@ func (w sessionOutput) Write(p []byte) (int, error) {
 		return w.io.Err.Write(p)
 	}
 	return w.io.Out.Write(p)
+}
+func (w sessionOutput) Fd() uintptr {
+	if w.stderr {
+		return streamFD(w.io.Err)
+	}
+	return streamFD(w.io.Out)
 }
 
 type closedStream struct{}

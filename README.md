@@ -1,7 +1,8 @@
 # go-bash
 
 A virtual Bash-style shell for Go with **uutils coreutils, grep, find, diff, sed, and ripgrep
-running in WebAssembly**. Package: `bash`. Command: `cmd/go-bash`.
+running in WebAssembly**. Package: `bash`. CLI: `cmd/go-bash`.
+Interactive console example: [`cmd/go-console`](cmd/go-console).
 
 The shell creates its own filesystem layout. Mount ordinary Go `fs.FS` values
 read-only, or use `vfs.WriteFS` for read-write access. Mounts do not need to be at
@@ -43,6 +44,24 @@ The third example **writes `result.txt` in your current host directory**. The
 interactive prompt is intentionally basic; output is captured until each script
 finishes. Piped input without `-c` is treated as a script; with `-c` it becomes
 the command's stdin. Use `-timeout 30s` to change the per-script deadline.
+
+For an editable prompt, history, Tab completion, and live command I/O:
+
+```sh
+go run ./cmd/go-console
+go run ./cmd/go-console -root ./some-directory -readonly
+```
+
+The console uses `$ ` as its prompt. Arrow keys edit and browse session history;
+Ctrl-R searches history. Tab completes commands, functions, variables, and paths
+in the virtual filesystem. `clear` clears the visible screen while preserving
+scrollback, and `reset` restores the console's startup terminal modes and ANSI
+display state. `history`, `history N`, and `history -c` list or clear session
+history, including editor recall. Enter `tui` for a full-screen Go directory browser;
+use Up/Down and `q` to return to the prompt. Ctrl-C cancels the current input or
+command, and Ctrl-D at an empty prompt exits and runs EXIT cleanup. The console
+requires a terminal and defaults to a five-minute execution deadline, adjustable
+with `-timeout`. See the [console example](cmd/go-console/README.md) for details.
 
 ## Go API
 
@@ -114,6 +133,24 @@ expansion/assignment error; the API session remains reusable. `Finish(ctx)` supp
 EOF and returns any pending EXIT-trap output and final status. `Close(ctx)` also
 runs pending cleanup, discarding its output, before releasing resources. The CLI
 calls `Finish` at EOF and uses `$ ` as its default primary prompt (`PS1`).
+
+`RunIO(ctx, script, IO{Stdin: reader, Stdout: writer, Stderr: writer})` connects
+live streams instead of capturing output in `Result`. `FinishIO` does the same
+for EOF cleanup. Nil input supplies EOF; nil output discards writes. The caller
+owns these streams and must unblock pending I/O when the execution context ends;
+the optional `IO.Cancel` callback handles cancellation, timeouts, and output-limit
+failures. The console shows cancellable terminal input. Execution and output limits still
+apply. Stream wrappers forward `Fd()` when available (otherwise `^uintptr(0)`),
+letting trusted Go commands detect a terminal and manage raw mode. Pipelines and
+virtual files supply their redirected streams as usual. This does not provide
+a PTY, job control, or terminal device support inside WASM.
+
+`Complete(ctx, prefix, kind)` provides a read-only completion source for editors.
+Kinds are `CompleteCommands`, `CompleteFiles`, `CompleteDirectories`, and
+`CompleteVariables`. Prefixes and results are literal, unquoted names; directory
+results end in `/`, and variable names omit `$`. Completion follows current
+virtual cwd/PATH and includes shell functions and custom commands. It does not
+evaluate shell text, run commands, or change `$?`.
 
 ### Custom Go commands
 
